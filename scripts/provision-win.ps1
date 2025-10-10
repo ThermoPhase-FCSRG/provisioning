@@ -4,6 +4,7 @@
               (optional) Docker Desktop, (optional) Windows Terminal, (optional) Cmder
   - Installs Miniconda and configures conda-forge (strict). No envs created.
   - Optional CUDA prep: installs NVIDIA driver (optional) and CUDA Toolkit.
+  - NEW: Sets ExecutionPolicy (CurrentUser -> RemoteSigned) so PowerShell profile loads (conda init works).
 
   Re-runnable (idempotent-ish). Keep it simple & clean.
 #>
@@ -21,12 +22,12 @@ $Cfg = [pscustomobject]@{
   CmderPackageId           = "cmder"        # "cmder" or "cmdermini"
 
   # CUDA prep (PyTorch + CUDA)
-  InstallCUDA              = $false         # true => install CUDA toolkit; driver optional abaixo
-  InstallNvidiaDriver      = $false         # true => instala driver NVIDIA via Chocolatey
-  CudaToolkitVersion       = $null          # ex.: "12.4.1" ou $null p/ mais recente
-  NvidiaDriverVersion      = $null          # ex.: "560.94" ou $null p/ mais recente
+  InstallCUDA              = $false         # true => install CUDA toolkit; driver optional below
+  InstallNvidiaDriver      = $false         # true => install NVIDIA display driver via Chocolatey
+  CudaToolkitVersion       = $null          # e.g. "12.4.1" or $null for latest
+  NvidiaDriverVersion      = $null          # e.g. "560.94" or $null for latest
 
-  # Optional pins (deixe $null para latest)
+  # Optional pins (leave $null for latest)
   GitVersion               = $null
   VSCodeVersion            = $null
   CMakeVersion             = $null
@@ -83,32 +84,20 @@ Choco-Ensure -Pkg cmake -Version $Cfg.CMakeVersion
 Choco-Ensure -Pkg ninja -Version $Cfg.NinjaVersion
 
 # Visual Studio 2022 Build Tools (MSVC + MSBuild + CMake integration + Win11 SDK)
-# Correct way: pass components via --package-parameters as a single quoted string
 $vsParamList = @(
   "--add Microsoft.VisualStudio.Workload.VCTools",
   "--add Microsoft.VisualStudio.Component.MSBuild",
   "--add Microsoft.VisualStudio.Component.VC.CMake.Project",
   "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
   "--add Microsoft.VisualStudio.Component.Windows11SDK.22000",
-  "--quiet",
-  "--norestart",
-  "--nocache"
+  "--quiet", "--norestart", "--nocache"
 )
 $vsParams = '"' + ($vsParamList -join ' ') + '"'
 Choco-Ensure -Pkg visualstudio2022buildtools -Version $Cfg.VSBuildToolsVersion -PackageParameters $vsParams
 
-if ($Cfg.InstallVSCode) {
-  Choco-Ensure -Pkg vscode -Version $Cfg.VSCodeVersion
-}
-
-if ($Cfg.InstallWindowsTerminal) {
-  # On Win11 it's often present; choco install is idempotent.
-  Choco-Ensure -Pkg microsoft-windows-terminal -Version $Cfg.WindowsTerminalVersion
-}
-
-if ($Cfg.InstallCmder) {
-  Choco-Ensure -Pkg $Cfg.CmderPackageId -Version $Cfg.CmderVersion
-}
+if ($Cfg.InstallVSCode)          { Choco-Ensure -Pkg vscode -Version $Cfg.VSCodeVersion }
+if ($Cfg.InstallWindowsTerminal) { Choco-Ensure -Pkg microsoft-windows-terminal -Version $Cfg.WindowsTerminalVersion }
+if ($Cfg.InstallCmder)           { Choco-Ensure -Pkg $Cfg.CmderPackageId -Version $Cfg.CmderVersion }
 
 if ($Cfg.InstallDocker) {
   Choco-Ensure -Pkg docker-desktop
@@ -124,7 +113,7 @@ if ($Cfg.InstallDocker) {
 Write-Host "Installing Miniconda..."
 Choco-Ensure -Pkg miniconda3 -Version $Cfg.MinicondaVersion
 
-# Locate conda.bat (Chocolatey usually installs to C:\tools\miniconda3)
+# Locate conda.bat
 $condaBatCandidates = @(
   "$env:UserProfile\miniconda3\condabin\conda.bat",
   "$env:ProgramData\miniconda3\condabin\conda.bat",
@@ -133,16 +122,38 @@ $condaBatCandidates = @(
 $condaBat = $condaBatCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $condaBat) { throw "Could not find conda.bat (Miniconda). Checked: $($condaBatCandidates -join ', ')" }
 
-# Configure conda-forge (no env creation) — pass tokens separately
+# Configure conda-forge (no env creation)
 & $condaBat config --set channel_priority strict
 if ($LASTEXITCODE -ne 0) { throw "conda config channel_priority failed." }
 & $condaBat config --add channels conda-forge
 if ($LASTEXITCODE -ne 0) { throw "conda config add conda-forge failed." }
 
-# Make 'conda' available in new terminals (PowerShell & cmd)
+# Init for PowerShell & cmd
 & $condaBat init powershell
 & $condaBat init cmd.exe
-# (Open a new Windows Terminal/PowerShell/Cmder tab to pick this up.)
+
+# --- Ensure PowerShell profile can run (so conda init actually loads) ---
+try {
+  $cur = Get-ExecutionPolicy -Scope CurrentUser -ErrorAction SilentlyContinue
+  if (-not $cur -or $cur -eq 'Restricted' -or $cur -eq 'Undefined') {
+    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+    Write-Host "Set ExecutionPolicy (Windows PowerShell, CurrentUser) -> RemoteSigned."
+  } else {
+    Write-Host "ExecutionPolicy(CurrentUser for Windows PowerShell) is $cur (keeping)."
+  }
+} catch {
+  Write-Warning "Could not set ExecutionPolicy for Windows PowerShell CurrentUser: $_"
+}
+# Also set for PowerShell 7 (if installed). Separate policy hive.
+try {
+  $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
+  if ($pwsh) {
+    Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo','-NoProfile','-Command','Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force') -Wait -NoNewWindow
+    Write-Host "Set ExecutionPolicy (PowerShell 7, CurrentUser) -> RemoteSigned."
+  }
+} catch {
+  Write-Warning "Could not set ExecutionPolicy for PowerShell 7 CurrentUser: $_"
+}
 
 # CUDA prep (optional)
 if ($Cfg.InstallCUDA) {
@@ -154,7 +165,7 @@ if ($Cfg.InstallCUDA) {
     Write-Host "Skipping NVIDIA driver install (InstallNvidiaDriver=false). Ensure a compatible driver is already installed."
   }
 
-  # CUDA Toolkit (useful for nvcc/headers; PyTorch wheels bundle CUDA runtime)
+  # CUDA Toolkit (nvcc/headers; PyTorch wheels bundle CUDA runtime)
   Choco-Ensure -Pkg cuda -Version $Cfg.CudaToolkitVersion
 
   # Set CUDA_PATH for convenience (Machine scope)
@@ -163,9 +174,7 @@ if ($Cfg.InstallCUDA) {
     [Environment]::SetEnvironmentVariable('CUDA_PATH', $cudaRoot.FullName, 'Machine')
     $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
     $append = @("$($cudaRoot.FullName)\bin","$($cudaRoot.FullName)\libnvvp")
-    foreach ($p in $append) {
-      if ($machinePath -notlike "*$p*") { $machinePath += ";" + $p }
-    }
+    foreach ($p in $append) { if ($machinePath -notlike "*$p*") { $machinePath += ";" + $p } }
     [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
     Write-Host "Configured CUDA_PATH -> $($cudaRoot.FullName)"
   } else {
@@ -180,6 +189,7 @@ if ($Cfg.InstallCUDA) {
 Write-Host "Provisioning complete."
 Write-Host "Miniconda installed. conda-forge enabled with strict priority."
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
+Write-Host "ExecutionPolicy set to RemoteSigned (CurrentUser) for Windows PowerShell$(Get-Command pwsh -ErrorAction SilentlyContinue ? ', and PowerShell 7' : '')."
 if ($Cfg.InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
 if ($Cfg.InstallCmder)          { Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu." }
 if ($Cfg.InstallCUDA)           { Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA." }
