@@ -177,7 +177,7 @@ if ($Cfg.InstallCUDA) {
 & git config --global core.autocrlf input
 & git config --global init.defaultBranch main
 
-Write-Host "`n✅ Provisioning complete."
+Write-Host "Provisioning complete."
 Write-Host "Miniconda installed. conda-forge enabled with strict priority."
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
 if ($Cfg.InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
