@@ -4,7 +4,7 @@
               (optional) Docker Desktop, (optional) Windows Terminal, (optional) Cmder
   - Installs Miniconda and configures conda-forge (strict). No envs created.
   - Optional CUDA prep: installs NVIDIA driver (optional) and CUDA Toolkit.
-  - NEW: Sets ExecutionPolicy (CurrentUser -> RemoteSigned) so PowerShell profile loads (conda init works).
+  - Ensures ExecutionPolicy (CurrentUser -> RemoteSigned) so PowerShell profile loads (conda init works).
 
   Re-runnable (idempotent-ish). Keep it simple & clean.
 #>
@@ -132,7 +132,7 @@ if ($LASTEXITCODE -ne 0) { throw "conda config add conda-forge failed." }
 & $condaBat init powershell
 & $condaBat init cmd.exe
 
-# --- Ensure PowerShell profile can run (so conda init actually loads) ---
+# Ensure PowerShell profile can run (so conda init actually loads)
 try {
   $cur = Get-ExecutionPolicy -Scope CurrentUser -ErrorAction SilentlyContinue
   if (-not $cur -or $cur -eq 'Restricted' -or $cur -eq 'Undefined') {
@@ -144,11 +144,16 @@ try {
 } catch {
   Write-Warning "Could not set ExecutionPolicy for Windows PowerShell CurrentUser: $_"
 }
-# Also set for PowerShell 7 (if installed). Separate policy hive.
+
+# Also set for PowerShell 7 (if installed). Separate policy hive. (PS 5.1 compatible)
 try {
-  $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
-  if ($pwsh) {
-    Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo','-NoProfile','-Command','Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force') -Wait -NoNewWindow
+  $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+  if ($pwshCmd) {
+    $pwsh = $pwshCmd.Source
+    Start-Process -FilePath $pwsh -ArgumentList @(
+      '-NoLogo','-NoProfile','-Command',
+      'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'
+    ) -Wait -NoNewWindow
     Write-Host "Set ExecutionPolicy (PowerShell 7, CurrentUser) -> RemoteSigned."
   }
 } catch {
@@ -189,7 +194,7 @@ if ($Cfg.InstallCUDA) {
 Write-Host "Provisioning complete."
 Write-Host "Miniconda installed. conda-forge enabled with strict priority."
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
-Write-Host "ExecutionPolicy set to RemoteSigned (CurrentUser) for Windows PowerShell$(Get-Command pwsh -ErrorAction SilentlyContinue ? ', and PowerShell 7' : '')."
+Write-Host "ExecutionPolicy set to RemoteSigned (CurrentUser) for Windows PowerShell$(if (Get-Command pwsh -ErrorAction SilentlyContinue) { ', and PowerShell 7' } else { '' })."
 if ($Cfg.InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
 if ($Cfg.InstallCmder)          { Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu." }
 if ($Cfg.InstallCUDA)           { Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA." }
