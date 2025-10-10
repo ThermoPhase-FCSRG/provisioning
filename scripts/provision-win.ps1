@@ -17,24 +17,24 @@ $Cfg = [pscustomobject]@{
   InstallVSCode            = $true
   InstallDocker            = $true
   InstallWindowsTerminal   = $true
-  InstallCmder             = $true          # NEW: install Cmder (full). Set to $false to skip.
-  CmderPackageId           = "cmder"        # "cmder" (full) or "cmdermini" (lighter)
+  InstallCmder             = $true          # Cmder (full). Use "cmdermini" in CmderPackageId for lighter.
+  CmderPackageId           = "cmder"        # "cmder" or "cmdermini"
 
-  # CUDA prep (set true if you need PyTorch with CUDA)
-  InstallCUDA              = $false         # when true, installs CUDA Toolkit; driver install is optional below
-  InstallNvidiaDriver      = $false         # set true to install display driver via Chocolatey
-  CudaToolkitVersion       = $null          # e.g., "12.4.1" or $null for latest available
-  NvidiaDriverVersion      = $null          # e.g., "560.94" or $null for latest available
+  # CUDA prep (PyTorch + CUDA)
+  InstallCUDA              = $false         # true => install CUDA toolkit; driver optional abaixo
+  InstallNvidiaDriver      = $false         # true => instala driver NVIDIA via Chocolatey
+  CudaToolkitVersion       = $null          # ex.: "12.4.1" ou $null p/ mais recente
+  NvidiaDriverVersion      = $null          # ex.: "560.94" ou $null p/ mais recente
 
-  # Optional version pins (leave $null for latest)
+  # Optional pins (deixe $null para latest)
   GitVersion               = $null
   VSCodeVersion            = $null
   CMakeVersion             = $null
   NinjaVersion             = $null
   VSBuildToolsVersion      = $null
   MinicondaVersion         = $null
-  WindowsTerminalVersion   = $null          # Choco id: microsoft-windows-terminal
-  CmderVersion             = $null          # Version for Cmder/CmderMini if you want to pin
+  WindowsTerminalVersion   = $null
+  CmderVersion             = $null
 }
 # ------------------------------------------------
 
@@ -54,13 +54,18 @@ if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
   Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
 }
 
-# Helper: idempotent choco ensure
+# Helper: idempotent choco ensure (with --package-parameters support)
 function Choco-Ensure {
-  param([string]$Pkg, [string]$Version = $null, [string]$Params = "")
-  $args = @("install",$Pkg,"-y","--no-progress")
-  if ($Version) { $args += "--version=$Version" }
-  if ($Params)  { $args += "--params=$Params" }
+  param(
+    [Parameter(Mandatory=$true)][string]$Pkg,
+    [string]$Version = $null,
+    [string]$PackageParameters = ""
+  )
+  $args = @("install", $Pkg, "-y", "--no-progress")
+  if ($Version)           { $args += "--version=$Version" }
+  if ($PackageParameters) { $args += "--package-parameters=$PackageParameters" }
   choco @args
+  if ($LASTEXITCODE -ne 0) { throw "choco install failed: $Pkg" }
 }
 
 # Enable long paths (useful for deep Python trees)
@@ -72,30 +77,41 @@ function Enable-LongPaths {
 Enable-LongPaths
 
 Write-Host "Installing core development tools..."
-Choco-Ensure git           $Cfg.GitVersion
-Choco-Ensure 7zip
-Choco-Ensure cmake         $Cfg.CMakeVersion
-Choco-Ensure ninja         $Cfg.NinjaVersion
+Choco-Ensure -Pkg git -Version $Cfg.GitVersion
+Choco-Ensure -Pkg 7zip
+Choco-Ensure -Pkg cmake -Version $Cfg.CMakeVersion
+Choco-Ensure -Pkg ninja -Version $Cfg.NinjaVersion
 
 # Visual Studio 2022 Build Tools (MSVC + MSBuild + CMake integration + Win11 SDK)
-$vsParams = ' "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.MSBuild --add Microsoft.VisualStudio.Component.VC.CMake.Project --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22000 --quiet --norestart --nocache" '
-Choco-Ensure visualstudio2022buildtools $Cfg.VSBuildToolsVersion $vsParams
+# Correct way: pass components via --package-parameters as a single quoted string
+$vsParamList = @(
+  "--add Microsoft.VisualStudio.Workload.VCTools",
+  "--add Microsoft.VisualStudio.Component.MSBuild",
+  "--add Microsoft.VisualStudio.Component.VC.CMake.Project",
+  "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+  "--add Microsoft.VisualStudio.Component.Windows11SDK.22000",
+  "--quiet",
+  "--norestart",
+  "--nocache"
+)
+$vsParams = '"' + ($vsParamList -join ' ') + '"'
+Choco-Ensure -Pkg visualstudio2022buildtools -Version $Cfg.VSBuildToolsVersion -PackageParameters $vsParams
 
 if ($Cfg.InstallVSCode) {
-  Choco-Ensure vscode $Cfg.VSCodeVersion
+  Choco-Ensure -Pkg vscode -Version $Cfg.VSCodeVersion
 }
 
 if ($Cfg.InstallWindowsTerminal) {
   # On Win11 it's often present; choco install is idempotent.
-  Choco-Ensure microsoft-windows-terminal $Cfg.WindowsTerminalVersion
+  Choco-Ensure -Pkg microsoft-windows-terminal -Version $Cfg.WindowsTerminalVersion
 }
 
 if ($Cfg.InstallCmder) {
-  Choco-Ensure $Cfg.CmderPackageId $Cfg.CmderVersion
+  Choco-Ensure -Pkg $Cfg.CmderPackageId -Version $Cfg.CmderVersion
 }
 
 if ($Cfg.InstallDocker) {
-  Choco-Ensure docker-desktop
+  Choco-Ensure -Pkg docker-desktop
   try {
     $user = "$env:USERDOMAIN\$env:USERNAME"
     if (-not (Get-LocalGroupMember -Group "docker-users" -ErrorAction SilentlyContinue | Where-Object Name -eq $user)) {
@@ -106,43 +122,51 @@ if ($Cfg.InstallDocker) {
 }
 
 Write-Host "Installing Miniconda..."
-Choco-Ensure miniconda3 $Cfg.MinicondaVersion
+Choco-Ensure -Pkg miniconda3 -Version $Cfg.MinicondaVersion
 
-# Locate conda.bat
-$condaBat = "$env:UserProfile\miniconda3\condabin\conda.bat"
-if (-not (Test-Path $condaBat)) {
-  $condaBat = "$env:ProgramData\miniconda3\condabin\conda.bat"
-}
-if (-not (Test-Path $condaBat)) { throw "Could not find conda.bat (Miniconda). Check installation path." }
+# Locate conda.bat (Chocolatey usually installs to C:\tools\miniconda3)
+$condaBatCandidates = @(
+  "$env:UserProfile\miniconda3\condabin\conda.bat",
+  "$env:ProgramData\miniconda3\condabin\conda.bat",
+  "C:\tools\miniconda3\condabin\conda.bat"
+)
+$condaBat = $condaBatCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $condaBat) { throw "Could not find conda.bat (Miniconda). Checked: $($condaBatCandidates -join ', ')" }
 
-# Configure conda-forge (no env creation)
-& $condaBat "config --set channel_priority strict"
-& $condaBat "config --add channels conda-forge"
+# Configure conda-forge (no env creation) — pass tokens separately
+& $condaBat config --set channel_priority strict
+if ($LASTEXITCODE -ne 0) { throw "conda config channel_priority failed." }
+& $condaBat config --add channels conda-forge
+if ($LASTEXITCODE -ne 0) { throw "conda config add conda-forge failed." }
 
 # Make 'conda' available in new terminals (PowerShell & cmd)
-& $condaBat "init powershell"
-& $condaBat "init cmd.exe"
+& $condaBat init powershell
+& $condaBat init cmd.exe
 # (Open a new Windows Terminal/PowerShell/Cmder tab to pick this up.)
 
 # CUDA prep (optional)
 if ($Cfg.InstallCUDA) {
   Write-Host "CUDA prep enabled."
   if ($Cfg.InstallNvidiaDriver) {
-    Choco-Ensure nvidia-display-driver $Cfg.NvidiaDriverVersion
+    Choco-Ensure -Pkg nvidia-display-driver -Version $Cfg.NvidiaDriverVersion
     Write-Host "NVIDIA display driver installed (or already present). A reboot may be required."
   } else {
     Write-Host "Skipping NVIDIA driver install (InstallNvidiaDriver=false). Ensure a compatible driver is already installed."
   }
 
   # CUDA Toolkit (useful for nvcc/headers; PyTorch wheels bundle CUDA runtime)
-  Choco-Ensure cuda $Cfg.CudaToolkitVersion
+  Choco-Ensure -Pkg cuda -Version $Cfg.CudaToolkitVersion
 
   # Set CUDA_PATH for convenience (Machine scope)
   $cudaRoot = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
   if ($cudaRoot) {
     [Environment]::SetEnvironmentVariable('CUDA_PATH', $cudaRoot.FullName, 'Machine')
-    $newPath = "$($env:Path);$($cudaRoot.FullName)\bin;$($cudaRoot.FullName)\libnvvp"
-    [Environment]::SetEnvironmentVariable('Path', $newPath, 'Machine')
+    $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
+    $append = @("$($cudaRoot.FullName)\bin","$($cudaRoot.FullName)\libnvvp")
+    foreach ($p in $append) {
+      if ($machinePath -notlike "*$p*") { $machinePath += ";" + $p }
+    }
+    [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
     Write-Host "Configured CUDA_PATH -> $($cudaRoot.FullName)"
   } else {
     Write-Warning "CUDA toolkit folder not found; PATH/CUDA_PATH not updated."
@@ -156,15 +180,7 @@ if ($Cfg.InstallCUDA) {
 Write-Host "`n✅ Provisioning complete."
 Write-Host "Miniconda installed. conda-forge enabled with strict priority."
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
-if ($Cfg.InstallWindowsTerminal) {
-  Write-Host "Windows Terminal installed (or already present)."
-}
-if ($Cfg.InstallCmder) {
-  Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu."
-}
-if ($Cfg.InstallCUDA) {
-  Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA."
-}
-if ($Cfg.InstallDocker) {
-  Write-Host "Docker Desktop installed. Sign out/in once if 'docker-users' membership is new."
-}
+if ($Cfg.InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
+if ($Cfg.InstallCmder)          { Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu." }
+if ($Cfg.InstallCUDA)           { Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA." }
+if ($Cfg.InstallDocker)         { Write-Host "Docker Desktop installed. Sign out/in once if 'docker-users' membership is new." }
