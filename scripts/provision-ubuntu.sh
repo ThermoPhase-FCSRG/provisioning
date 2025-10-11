@@ -77,11 +77,9 @@ done
 # -------- apply profile defaults --------
 case "$PROFILE" in
   minimal)
-    INSTALL_DOCKER=${INSTALL_DOCKER:-false}
     INSTALL_DOCKER=false
     ;;
   gpu)
-    INSTALL_CUDA=${INSTALL_CUDA:-true}
     INSTALL_CUDA=true
     ;;
   default) ;;
@@ -100,41 +98,54 @@ log "Profile: $PROFILE"
 log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG Python:$INSTALL_PYTHON"
 log "Installing for user: $TARGET_USER (home: $TARGET_HOME)"
 
-# -------- VS Code repo: single canonical source (fixes Signed-By conflicts) --------
+# -------- VS Code repo: make it canonical & conflict-free --------
 setup_code_repo() {
   install -d -m 0755 /etc/apt/keyrings
-  # Microsoft GPG -> /etc/apt/keyrings/packages.microsoft.gpg
-  if [ ! -f /etc/apt/keyrings/packages.microsoft.gpg ]; then
-    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor >/etc/apt/keyrings/packages.microsoft.gpg
-    chmod 0644 /etc/apt/keyrings/packages.microsoft.gpg
+  install -d -m 0755 /usr/share/keyrings
+
+  # Single canonical keyring path for VS Code
+  local keyring="/usr/share/keyrings/microsoft.gpg"
+  if [ ! -f "$keyring" ]; then
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor >"$keyring"
+    chmod 0644 "$keyring"
   fi
 
-  # Remove/disable any other 'packages.microsoft.com/repos/code' sources that use a different signed-by
-  # 1) Comment conflicting lines in /etc/apt/sources.list
-  if grep -q 'packages.microsoft.com/repos/code' /etc/apt/sources.list 2>/dev/null; then
-    sed -i 's|^\s*deb .\+packages.microsoft.com/repos/code.\+|# commented by provisioner: conflicting code repo|g' /etc/apt/sources.list
+  # 1) Comment Code repo lines in the main sources.list
+  if grep -qs 'packages.microsoft.com/repos/code' /etc/apt/sources.list 2>/dev/null; then
+    sed -i 's|^\s*deb .*packages.microsoft.com/repos/code.*|# commented by provisioner: conflicting CODE repo|g' /etc/apt/sources.list
   fi
-  # 2) Comment conflicting lines in any other list files
-  for f in /etc/apt/sources.list.d/*.list; do
+
+  # 2) Disable any *.sources files referencing the Code repo
+  for f in /etc/apt/sources.list.d/*.sources; do
     [ -f "$f" ] || continue
-    if grep -q 'packages.microsoft.com/repos/code' "$f"; then
-      if [ "$f" != "/etc/apt/sources.list.d/vscode.list" ]; then
-        sed -i 's|^\s*deb .\+packages.microsoft.com/repos/code.\+|# commented by provisioner: conflicting code repo|g' "$f" || true
-      fi
+    if grep -qs 'packages.microsoft.com/repos/code' "$f"; then
+      mv -f "$f" "${f}.disabled"
+      log "Disabled conflicting sources file: ${f} -> ${f}.disabled"
     fi
   done
 
-  # 3) Write the single canonical source file
+  # 3) Comment conflicting entries in other .list files
+  for f in /etc/apt/sources.list.d/*.list; do
+    [ -f "$f" ] || continue
+    [ "$f" = "/etc/apt/sources.list.d/vscode.list" ] && continue
+    if grep -qs 'packages.microsoft.com/repos/code' "$f"; then
+      sed -i 's|^\s*deb .*packages.microsoft.com/repos/code.*|# commented by provisioner: conflicting CODE repo|g' "$f"
+      log "Commented conflicting entry in: $f"
+    fi
+  done
+
+  # 4) Write the single canonical VS Code repo file
   cat >/etc/apt/sources.list.d/vscode.list <<EOF
-deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main
+deb [arch=$(dpkg --print-architecture) signed-by=$keyring] https://packages.microsoft.com/repos/code stable main
 EOF
-  log "Set Code repo at /etc/apt/sources.list.d/vscode.list (signed-by=/etc/apt/keyrings/packages.microsoft.gpg)"
+
+  log "Set VS Code repo at /etc/apt/sources.list.d/vscode.list (signed-by=$keyring)"
 }
 
 # -------- Docker repo (skip in WSL unless you really want engine inside WSL) --------
 setup_docker_repo() {
   if $IS_WSL; then
-    warn "Detected WSL2. Skipping Docker Engine repo; prefer Docker Desktop on Windows. (You can enable with --install-docker=true, but service mgmt is limited in WSL.)"
+    warn "Detected WSL2. Skipping Docker Engine repo; prefer Docker Desktop on Windows."
     return 0
   fi
   install -d -m 0755 /etc/apt/keyrings
@@ -143,19 +154,17 @@ setup_docker_repo() {
     chmod 0644 /etc/apt/keyrings/docker.gpg
   fi
   codename="$(. /etc/os-release && echo "$UBUNTU_CODENAME")"
-  echo \
-"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $codename stable" \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $codename stable" \
     >/etc/apt/sources.list.d/docker.list
 }
 
 # -------- base packages + git-lfs init --------
 setup_code_repo
 log "Updating apt and installing base packages..."
-apt-get update -y
+apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   ca-certificates curl wget gnupg lsb-release software-properties-common \
   git git-lfs build-essential pkg-config cmake ninja-build unzip xz-utils p7zip-full
-# Init Git LFS
 sudo -u "$TARGET_USER" git lfs install || true
 log "Updated git hooks."
 log "Git LFS initialized."
@@ -163,7 +172,7 @@ log "Git LFS initialized."
 # -------- VS Code --------
 if [ "$INSTALL_VSCODE" = "true" ]; then
   log "Installing VS Code (Microsoft repo)..."
-  apt-get update -y
+  apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y code
 fi
 
@@ -171,7 +180,6 @@ fi
 if [ "$INSTALL_PYTHON" = "true" ]; then
   log "Installing system Python (python3, venv, pip)..."
   DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip
-  # Provide 'python' -> python3 on Debian/Ubuntu families
   DEBIAN_FRONTEND=noninteractive apt-get install -y python-is-python3 || true
 fi
 
@@ -179,7 +187,7 @@ fi
 if [ "$INSTALL_DOCKER" = "true" ]; then
   setup_docker_repo
   if ! $IS_WSL; then
-    apt-get update -y
+    apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
       docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     systemctl enable --now docker || true
@@ -195,7 +203,6 @@ if [ "$INSTALL_CUDA" = "true" ]; then
     warn "Driver install is for bare-metal Ubuntu only. On WSL2, the NVIDIA driver must be on Windows."
   fi
   log "Installing CUDA toolkit package: $CUDA_TOOLKIT_PKG"
-  # Use Ubuntu's meta if available or NVIDIA repo if you prefer; here we use Ubuntu/universe packaging.
   DEBIAN_FRONTEND=noninteractive apt-get install -y "$CUDA_TOOLKIT_PKG"
 fi
 
@@ -216,14 +223,12 @@ install_miniconda_user() {
     tmp="/tmp/$installer"
     curl -fsSL "$url" -o "$tmp"
     chown "$u":"$u" "$tmp"
-    # silent install as target user
-    sudo -u "$u" bash "$tmp" -b -p "$prefix"
+    sudo -H -u "$u" bash "$tmp" -b -p "$prefix"
     rm -f "$tmp"
   else
     log "Miniconda already present at $prefix"
   fi
 
-  # Configure conda-forge + init shells for the user
   local conda_bin="$prefix/bin/conda"
   if [ ! -x "$conda_bin" ]; then
     err "Conda binary not found at $conda_bin"
