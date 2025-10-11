@@ -1,6 +1,6 @@
 # provisioning
 
-Provisioning scripts for developer machines on Ubuntu and Windows. They install common tooling (Git, VS Code, Docker), set up a user-scoped Miniconda with conda-forge, and optionally prepare CUDA.
+Provisioning scripts for developer machines on Ubuntu, macOS, and Windows. They install common tooling (Git, VS Code, Docker), set up a user-scoped Miniconda with conda-forge, and optionally prepare CUDA.
 
 These scripts are CLI-configurable and expose small profiles to make running them predictable and repeatable.
 
