@@ -108,6 +108,7 @@ Basic run (default profile):
 
 ```powershell
 # from repo root in elevated PowerShell
+Set-ExecutionPolicy Bypass -Scope Process -Force
 ./scripts/provision-win.ps1
 ```
 
@@ -130,6 +131,7 @@ Parameters (examples)
 Example: GPU profile but skip Docker and pin CUDA version
 
 ```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
 ./scripts/provision-win.ps1 -Profile gpu -InstallDocker:$false -CudaToolkitVersion 12.4.1
 ```
 
