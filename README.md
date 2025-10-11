@@ -20,8 +20,9 @@ Ubuntu CLI flags
 | `--install-vscode` | `true` | Install Microsoft VS Code repo + `code` package |
 | `--install-docker` | `true` | Install Docker Engine from Docker apt repo |
 | `--install-cuda` | `false` | Install NVIDIA CUDA toolkit package |
-| `--install-nvidia-driver` | `false` | Run `ubuntu-drivers autoinstall` to install GPU driver |
+| `--install-driver` | `false` | Install NVIDIA GPU driver (bare metal only; ignored on WSL) |
 | `--cuda-toolkit-pkg` | `cuda-toolkit-12-4` | Specific CUDA toolkit package name to install |
+| `--install-python` | `true` | Install system Python3 + venv + pip |
 
 macOS CLI flags
 
@@ -35,6 +36,7 @@ macOS CLI flags
 | `--install-miniforge` | `true` | Install Miniforge (conda-forge) |
 | `--miniforge-prefix` | `$HOME/miniforge3` | Install path for Miniforge |
 | `--install-llvm` | `true` | Install Homebrew llvm and libomp |
+| `--install-python` | `true` | Install Homebrew Python (includes venv) |
 
 Windows PowerShell parameters
 
@@ -63,47 +65,54 @@ Run from the repository root. The script requires root to install system package
 Basic run:
 
 ```bash
-sudo bash scripts/provision-ubuntu.sh
+sudo -E bash scripts/provision-ubuntu.sh
 ```
 
 Profiles
 
-- `--profile=default`  (default) -> VS Code ON, Docker ON, CUDA OFF
-- `--profile=minimal`  -> VS Code ON, Docker OFF, CUDA OFF
-- `--profile=gpu`      -> VS Code ON, Docker ON, CUDA+Driver ON
+- `--profile=default`  (default) -> VS Code ON, Docker ON
+- `--profile=minimal`  -> VS Code ON, Docker OFF
+- `--profile=gpu`      -> VS Code ON, Docker ON, CUDA toolkit ON (driver optional)
 
 CLI flags (override profile defaults)
 
 - `--install-vscode=true|false`
 - `--install-docker=true|false`
 - `--install-cuda=true|false`
-- `--install-nvidia-driver=true|false`
+- `--install-driver=true|false`
 - `--cuda-toolkit-pkg=cuda-toolkit-12-4` (or `cuda-toolkit`)
+- `--install-python=true|false`
 
 Examples
 
 - Default profile (VS Code + Docker):
 
 ```bash
-sudo bash scripts/provision-ubuntu.sh
+sudo -E bash scripts/provision-ubuntu.sh
 ```
 
 - Minimal profile (skip Docker):
 
 ```bash
-sudo bash scripts/provision-ubuntu.sh --profile=minimal
+sudo -E bash scripts/provision-ubuntu.sh --profile=minimal
 ```
 
 - GPU profile but explicitly disable Docker:
 
 ```bash
-sudo bash scripts/provision-ubuntu.sh --profile=gpu --install-docker=false
+sudo -E bash scripts/provision-ubuntu.sh --profile=gpu --install-docker=false
+```
+ 
+- Strict verification (optional):
+
+```bash
+VERIFY_STRICT=true sudo -E bash scripts/provision-ubuntu.sh --profile=minimal
 ```
 
 What the script does (high level)
 
 - Detects the real (non-root) user who invoked sudo so Miniconda installs into their home.
-- Adds/normalizes vendor apt repositories (Docker, Microsoft Code, NVIDIA CUDA) in an idempotent way.
+- Adds/normalizes vendor apt repositories (Docker, Microsoft Code) in an idempotent way; CUDA uses distro packages.
 - Installs base packages and tooling via apt.
 - Installs Miniconda into the invoking user's home and runs `conda init` for bash and zsh.
 
@@ -111,13 +120,13 @@ Notes & gotchas
 
 - Must run as root (sudo). The script exits early if not run as root.
 - The script bundles logic to detect and resolve conflicting VS Code apt repo entries before running `apt update`.
-- Miniconda installer URL targets x86_64 by default; change the URL in the script if you need aarch64/ARM builds.
-- Docker: after install, log out/in or run `newgrp docker` to use Docker without sudo.
-- CUDA: if the NVIDIA driver is installed, a reboot is recommended.
+- Miniconda installer auto-selects x86_64/arm64.
+- Docker: after install, log out/in or run `newgrp docker` to use Docker without sudo. On WSL, the script skips engine install and recommends Docker Desktop.
+- CUDA: driver install is for bare metal Ubuntu; on WSL2 use Windows driver. Reboot recommended after driver install.
 
 ## macOS: usage, profiles and CLI flags
 
-Run from the repository root on a macOS machine. This script is intended to be run as a normal user (not sudo). It installs Homebrew, user-scoped casks, and Miniforge into your home by default.
+Run from the repository root on a macOS machine. This script is intended to be run as a normal user (not sudo). It installs Homebrew, user-scoped casks, Miniforge into your home by default, and optionally system Python and LLVM/libomp.
 
 Basic run:
 
@@ -140,11 +149,12 @@ CLI flags (override profile defaults)
 - `--install-miniforge=true|false`
 - `--miniforge-prefix=/path/to/miniforge3`  # default: $HOME/miniforge3
 - `--install-llvm=true|false`
+- `--install-python=true|false`
 
 What the script does (high level)
 
 - Installs Homebrew if missing and wires it into your shell startup files.
-- Installs dev tools via Homebrew (git, git-lfs, cmake, ninja, pkg-config, optional llvm/libomp).
+- Installs dev tools via Homebrew (git, git-lfs, cmake, ninja, pkg-config, optional llvm/libomp, optional Python).
 - Installs casks: VS Code, iTerm2, Docker Desktop (if enabled).
 - Installs Miniforge into `--miniforge-prefix`, sets conda-forge (strict), runs `conda init` for bash and zsh.
 - Optionally installs Rosetta 2 on Apple Silicon when requested.
@@ -155,6 +165,7 @@ Notes & gotchas
 - After installing Docker Desktop, launch the app once to finish setup and grant permissions.
 - If Rosetta is enabled, you may be prompted for your password.
 - Open a NEW terminal to get `conda` on PATH, or run `source "$MINIFORGE_PREFIX/etc/profile.d/conda.sh"` then `conda activate`.
+- For Python venvs with Homebrew Python: `python3 -m venv .venv && source .venv/bin/activate`.
 - CUDA is not supported on current macOS. For PyTorch on Apple Silicon, use MPS (`torch.device("mps")`).
 
 ## Windows: usage and parameters
@@ -195,7 +206,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 What the script does (high level)
 
 - Installs Chocolatey if missing, then uses it to install packages. Visual Studio Build Tools are installed with package parameters to include MSVC/MSBuild components.
-- Installs Miniconda (choco package) and runs `conda init` for PowerShell and cmd.
+- Installs system Python first (optional), then installs Miniconda using the official latest installer by default (or Chocolatey if configured), and runs `conda init` for PowerShell and cmd.
 - Ensures ExecutionPolicy for the CurrentUser is set so PowerShell profiles load (required for conda init to be effective).
 
 Notes
@@ -203,6 +214,7 @@ Notes
 - Must run in an elevated PowerShell. The script will throw if not elevated.
 - If Docker Desktop is installed and your account was added to `docker-users`, sign out/in.
 - If NVIDIA driver is installed, reboot is recommended.
+- The script supports parameters for Miniconda installation: direct official installer by default (`-MinicondaUseDirectInstaller`), install directory, forced reinstall, and conda self-update.
 
 ## Verification
 
