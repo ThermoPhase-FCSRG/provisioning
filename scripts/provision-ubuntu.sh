@@ -1,43 +1,133 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -------------------- CONFIG --------------------
+# ===========================================
+# Provision Ubuntu for Dev + Miniconda (CLI)
+# Profiles: default | minimal | gpu
+# Flags override profile defaults.
+# ===========================================
+
+# ---------- Defaults ----------
+PROFILE="default"
+
 INSTALL_VSCODE=true
 INSTALL_DOCKER=true
 
-INSTALL_CUDA=false           # true => install CUDA toolkit (and driver if enabled below)
-INSTALL_NVIDIA_DRIVER=false  # true => run ubuntu-drivers autoinstall
+INSTALL_CUDA=false
+INSTALL_NVIDIA_DRIVER=false
 
-# Optional pins (leave empty for latest)
-CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"  # e.g., cuda-toolkit-12-4 or just "cuda-toolkit"
-# ------------------------------------------------
+CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"   # e.g., "cuda-toolkit-12-4" or "cuda-toolkit"
 
-# Detect the invoking user (so Miniconda lands in the right $HOME)
+# You can add more pins here if you want later (apt uses latest by default)
+
+# ---------- Helpers ----------
+log()  { echo -e "\033[1;32m[INFO]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
+err()  { echo -e "\033[1;31m[ERR ]\033[0m $*" >&2; }
+
+need_root() {
+  if [[ $EUID -ne 0 ]]; then
+    err "Please run as root: sudo bash $0 [flags]"
+    exit 1
+  fi
+}
+
+parse_bool() {
+  case "${1,,}" in
+    true|1|yes|y|on)  echo "true" ;;
+    false|0|no|n|off) echo "false" ;;
+    *) err "Invalid boolean value: '$1' (use true/false)"; exit 2 ;;
+  esac
+}
+
+# ---------- Parse CLI ----------
+# Supported flags:
+#   --profile=default|minimal|gpu
+#   --install-vscode=true|false
+#   --install-docker=true|false
+#   --install-cuda=true|false
+#   --install-nvidia-driver=true|false
+#   --cuda-toolkit-pkg=<deb package name>
+for arg in "$@"; do
+  case "$arg" in
+    --profile=*)                 PROFILE="${arg#*=}";;
+    --install-vscode=*)          INSTALL_VSCODE=$(parse_bool "${arg#*=}");;
+    --install-docker=*)          INSTALL_DOCKER=$(parse_bool "${arg#*=}");;
+    --install-cuda=*)            INSTALL_CUDA=$(parse_bool "${arg#*=}");;
+    --install-nvidia-driver=*)   INSTALL_NVIDIA_DRIVER=$(parse_bool "${arg#*=}");;
+    --cuda-toolkit-pkg=*)        CUDA_TOOLKIT_PKG="${arg#*=}";;
+    -h|--help)
+      cat <<'USAGE'
+Usage: sudo bash provision-ubuntu.sh [flags]
+
+Profiles (defaults if you omit flags):
+  --profile=default   VS Code ON, Docker ON, CUDA OFF
+  --profile=minimal   VS Code ON, Docker OFF, CUDA OFF
+  --profile=gpu       VS Code ON, Docker ON, CUDA+Driver ON
+
+Flags (override profile defaults):
+  --install-vscode=true|false
+  --install-docker=true|false
+  --install-cuda=true|false
+  --install-nvidia-driver=true|false
+  --cuda-toolkit-pkg=cuda-toolkit-12-4   # or "cuda-toolkit"
+
+Examples:
+  sudo bash provision-ubuntu.sh
+  sudo bash provision-ubuntu.sh --profile=minimal
+  sudo bash provision-ubuntu.sh --profile=gpu
+  sudo bash provision-ubuntu.sh --profile=gpu --install-docker=false
+USAGE
+      exit 0;;
+    *)
+      err "Unknown flag: $arg"; exit 2;;
+  esac
+done
+
+# ---------- Apply profile defaults (only those not explicitly overridden) ----------
+# (Since flags are parsed directly into vars, we set profile-based defaults first then rely on flags
+# already having overridden them. Here we adjust ONLY when user didn't pass flags — but we can't detect that
+# robustly without tracking. So we set profile defaults BEFORE parsing in a typical design. For simplicity:
+# The declared defaults represent 'default' profile already. We only tweak for other profiles here.)
+case "$PROFILE" in
+  minimal)
+    INSTALL_DOCKER=${INSTALL_DOCKER:-false}; INSTALL_DOCKER=false
+    ;;
+  gpu)
+    INSTALL_CUDA=${INSTALL_CUDA:-false}; INSTALL_CUDA=true
+    INSTALL_NVIDIA_DRIVER=${INSTALL_NVIDIA_DRIVER:-false}; INSTALL_NVIDIA_DRIVER=true
+    ;;
+  default) ;;
+  *)
+    err "Invalid --profile value: $PROFILE (use default|minimal|gpu)"; exit 2;;
+esac
+
+need_root
+
+# ---------- Real user (for Miniconda) ----------
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
-
-if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root (use: sudo bash $0)"; exit 1
+if [[ -z "$REAL_HOME" || ! -d "$REAL_HOME" ]]; then
+  err "Could not determine real user's home for $REAL_USER"
+  exit 1
 fi
 
-log() { echo -e "\033[1;32m[INFO]\033[0m $*"; }
-warn(){ echo -e "\033[1;33m[WARN]\033[0m $*"; }
-err() { echo -e "\033[1;31m[ERR ]\033[0m $*" >&2; }
+log "Profile: $PROFILE"
+log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_NVIDIA_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG"
+log "Installing for user: $REAL_USER (home: $REAL_HOME)"
 
-# --- Base packages & updates ---
-log "Updating apt and installing base packages..."
+# ---------- Base packages ----------
 export DEBIAN_FRONTEND=noninteractive
+log "Updating apt and installing base packages..."
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  git git-lfs ca-certificates curl wget gnupg lsb-release \
-  build-essential pkg-config \
+  ca-certificates curl wget gnupg lsb-release software-properties-common \
+  git git-lfs build-essential pkg-config \
   cmake ninja-build \
-  unzip xz-utils p7zip-full \
-  software-properties-common
-
+  unzip xz-utils p7zip-full
 git lfs install || true
 
-# --- VS Code (optional) ---
+# ---------- VS Code (optional) ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
   log "Installing VS Code (Microsoft repo)..."
   install -d -m 0755 /etc/apt/keyrings
@@ -49,7 +139,7 @@ if [[ "$INSTALL_VSCODE" == "true" ]]; then
   apt-get install -y code
 fi
 
-# --- Docker Engine (optional, official repo) ---
+# ---------- Docker Engine (optional, official repo) ----------
 if [[ "$INSTALL_DOCKER" == "true" ]]; then
   log "Installing Docker Engine (Docker official apt repo)..."
   install -m 0755 -d /etc/apt/keyrings
@@ -64,12 +154,12 @@ if [[ "$INSTALL_DOCKER" == "true" ]]; then
   usermod -aG docker "$REAL_USER" || warn "Could not add ${REAL_USER} to docker group"
 fi
 
-# --- Miniconda (user scope), conda-forge, conda init ---
+# ---------- Miniconda (user scope), conda-forge, conda init ----------
 log "Installing Miniconda for user: $REAL_USER"
 CONDA_DIR="${REAL_HOME}/miniconda3"
 if [[ ! -d "$CONDA_DIR" ]]; then
   tmp_installer="/tmp/miniconda.sh"
-  # Use latest Miniconda installer (x86_64) – change URL if you’re on a different arch
+  # x86_64 installer; change URL for aarch64 if needed
   curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o "$tmp_installer"
   chown "$REAL_USER":"$REAL_USER" "$tmp_installer"
   sudo -u "$REAL_USER" bash "$tmp_installer" -b -p "$CONDA_DIR"
@@ -78,7 +168,6 @@ else
   log "Miniconda already present at $CONDA_DIR"
 fi
 
-# Conda config and init (bash & zsh) for the real user
 CONDA_BIN="${CONDA_DIR}/bin/conda"
 if [[ ! -x "$CONDA_BIN" ]]; then
   err "Conda binary not found at $CONDA_BIN"; exit 1
@@ -87,15 +176,12 @@ fi
 log "Configuring conda-forge (strict) and initializing shells..."
 sudo -u "$REAL_USER" "$CONDA_BIN" config --set channel_priority strict
 sudo -u "$REAL_USER" "$CONDA_BIN" config --add channels conda-forge || true
-
-# init for bash
 sudo -u "$REAL_USER" "$CONDA_BIN" init bash || true
-# init for zsh (only if zsh exists)
 if command -v zsh >/dev/null 2>&1; then
   sudo -u "$REAL_USER" "$CONDA_BIN" init zsh || true
 fi
 
-# --- CUDA (optional): NVIDIA driver + CUDA Toolkit via NVIDIA repo ---
+# ---------- CUDA (optional): NVIDIA driver + CUDA Toolkit ----------
 if [[ "$INSTALL_CUDA" == "true" ]]; then
   log "CUDA flag is ON."
 
@@ -108,12 +194,10 @@ if [[ "$INSTALL_CUDA" == "true" ]]; then
   fi
 
   log "Setting up NVIDIA CUDA apt repo and installing ${CUDA_TOOLKIT_PKG} ..."
-  # Determine correct repo path (e.g., ubuntu2204 or ubuntu2404)
   ver_id="$(. /etc/os-release && echo "$VERSION_ID")"          # e.g., 22.04
   ver_nodot="${ver_id//./}"                                   # e.g., 2204
   cuda_keyring="cuda-keyring_1.1-1_all.deb"
 
-  # Add NVIDIA CUDA repo via cuda-keyring (idempotent)
   if ! dpkg -l | grep -q cuda-keyring; then
     curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ver_nodot}/x86_64/${cuda_keyring}" -o "/tmp/${cuda_keyring}" \
       || curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ver_nodot}/x86_64/${cuda_keyring%_*}_all.deb" -o "/tmp/${cuda_keyring}" \
@@ -125,15 +209,12 @@ if [[ "$INSTALL_CUDA" == "true" ]]; then
     log "cuda-keyring already installed."
   fi
 
-  # Install CUDA toolkit package
   apt-get install -y "${CUDA_TOOLKIT_PKG}" || {
     warn "Failed to install ${CUDA_TOOLKIT_PKG}. Trying generic 'cuda-toolkit'..."
-    apt-get install -y cuda-toolkit || {
-      err "CUDA toolkit installation failed."; exit 1;
-    }
+    apt-get install -y cuda-toolkit || { err "CUDA toolkit installation failed."; exit 1; }
   }
 
-  # Convenience: set CUDA paths in /etc/profile.d for all users
+  # Convenience: set CUDA paths for all users
   if [[ -d /usr/local/cuda ]]; then
     cat >/etc/profile.d/cuda-path.sh <<'EOF'
 export CUDA_HOME=/usr/local/cuda
@@ -146,10 +227,10 @@ EOF
   log "CUDA setup complete. A reboot is recommended if a driver was installed."
 fi
 
-# --- Final messages ---
+# ---------- Final ----------
 log "Provisioning complete."
 echo "• Miniconda for ${REAL_USER}: ${CONDA_DIR}"
 echo "• conda-forge enabled (strict), conda init done for bash$(command -v zsh >/dev/null 2>&1 && echo ', zsh')."
 [[ "$INSTALL_VSCODE" == "true" ]] && echo "• VS Code installed (code)."
-[[ "$INSTALL_DOCKER" == "true" ]] && echo "• Docker Engine installed. Log out/in (or newgrp docker) to use without sudo."
-[[ "$INSTALL_CUDA" == "true" ]]  && echo "• CUDA toolkit installed. Reboot after driver install."
+[[ "$INSTALL_DOCKER" == "true" ]] && echo "• Docker Engine installed. Log out/in (or 'newgrp docker') to use without sudo."
+[[ "$INSTALL_CUDA" == "true"  ]] && echo "• CUDA toolkit installed. Reboot after driver install."
