@@ -2,7 +2,10 @@
   Windows provisioning for Dev + Python via Miniconda (CLI-configurable + profiles)
   - Installs: Git, (optional) VS Code, CMake, Ninja, VS 2022 Build Tools (MSVC), 7zip,
               (optional) Docker Desktop, (optional) Windows Terminal, (optional) Cmder
-  - Installs Miniconda and configures conda-forge (strict). No envs created.
+  - Installs **system Python** first (via Chocolatey) with venv/pip (toggle with -InstallPython).
+  - Installs Miniconda using the **official latest installer by default** (toggle with -MinicondaUseDirectInstaller).
+    * Falls back to Chocolatey if you set -MinicondaUseDirectInstaller:$false.
+  - Configures conda-forge (strict). No envs created.
   - Optional CUDA prep: NVIDIA driver (optional) and CUDA Toolkit.
   - Ensures ExecutionPolicy (CurrentUser -> RemoteSigned) so PowerShell profile loads (conda init works).
 
@@ -10,10 +13,11 @@
     .\provision-win.ps1                               # default profile
     .\provision-win.ps1 -Profile minimal              # skips Docker by default
     .\provision-win.ps1 -Profile gpu                  # enables CUDA + NVIDIA driver by default
-    .\provision-win.ps1 -Profile gpu -InstallDocker:$false  # explicit flag overrides profile
+    .\provision-win.ps1 -InstallPython:$false         # skip system Python
+    .\provision-win.ps1 -MinicondaUseDirectInstaller:$false -MinicondaVersion 24.9.2  # choco pin
 
     # Version pins example:
-    .\provision-win.ps1 -CudaToolkitVersion 12.4.1 -GitVersion 2.47.0 -CMakeVersion 3.29.6
+    .\provision-win.ps1 -CudaToolkitVersion 12.4.1 -GitVersion 2.47.0 -CMakeVersion 3.29.6 -PythonVersion 3.12.6
 #>
 
 [CmdletBinding()]
@@ -22,12 +26,22 @@ param(
   [ValidateSet('default','minimal','gpu')]
   [string] $Profile = 'default',
 
-  # ===== Tool toggles ===== (explicit flags override profile defaults)
+  # ===== Tool toggles =====
   [bool] $InstallVSCode            = $true,
   [bool] $InstallWindowsTerminal   = $true,
   [bool] $InstallCmder             = $true,
   [string] $CmderPackageId         = "cmder",   # "cmder" or "cmdermini"
   [bool] $InstallDocker            = $true,
+
+  # ===== System Python toggle =====
+  [bool] $InstallPython            = $true,     # Chocolatey "python" (includes venv/pip)
+  [string] $PythonVersion          = $null,     # e.g. "3.12.6"
+
+  # ===== Miniconda controls =====
+  [bool]   $MinicondaUseDirectInstaller = $true,   # use official "latest" URL by default
+  [string] $MinicondaInstallDir         = "C:\tools\miniconda3", # no spaces (NSIS /D=path)
+  [bool]   $ForceReinstallMiniconda     = $false,  # silently uninstall/reinstall
+  [bool]   $CondaSelfUpdate             = $true,   # conda update -n base -y conda
 
   # ===== CUDA toggles =====
   [bool] $InstallCUDA              = $false,
@@ -41,7 +55,7 @@ param(
   [string] $CMakeVersion           = $null,
   [string] $NinjaVersion           = $null,
   [string] $VSBuildToolsVersion    = $null,
-  [string] $MinicondaVersion       = $null,
+  [string] $MinicondaVersion       = $null,    # only used when MinicondaUseDirectInstaller:$false
   [string] $WindowsTerminalVersion = $null,
   [string] $CmderVersion           = $null
 )
@@ -49,7 +63,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ----- Apply profile defaults (only if user did NOT set the flag) -----
+# ----- Apply profile defaults -----
 switch ($Profile) {
   'minimal' {
     if (-not $PSBoundParameters.ContainsKey('InstallDocker'))      { $InstallDocker = $false }
@@ -58,7 +72,7 @@ switch ($Profile) {
     if (-not $PSBoundParameters.ContainsKey('InstallCUDA'))        { $InstallCUDA = $true }
     if (-not $PSBoundParameters.ContainsKey('InstallNvidiaDriver')){ $InstallNvidiaDriver = $true }
   }
-  default { } # keep declared defaults
+  default { }
 }
 
 function Ensure-Admin {
@@ -77,7 +91,7 @@ if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
   Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
 }
 
-# Helper: idempotent choco ensure (with --package-parameters support)
+# Helper: idempotent choco ensure
 function Choco-Ensure {
   param(
     [Parameter(Mandatory=$true)][string]$Pkg,
@@ -91,7 +105,7 @@ function Choco-Ensure {
   if ($LASTEXITCODE -ne 0) { throw "choco install failed: $Pkg" }
 }
 
-# Enable long paths (useful for deep Python trees)
+# Enable long paths
 function Enable-LongPaths {
   $key="HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
   $cur=(Get-ItemProperty -Path $key -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
@@ -132,17 +146,85 @@ if ($InstallDocker) {
   } catch { Write-Warning $_ }
 }
 
-Write-Host "Installing Miniconda..."
-Choco-Ensure -Pkg miniconda3 -Version $MinicondaVersion
+# ---- System Python (with venv/pip) BEFORE Miniconda ----
+if ($InstallPython) {
+  Write-Host "Installing system Python (with venv/pip)..."
+  Choco-Ensure -Pkg python -Version $PythonVersion
 
-# Locate conda.bat (Chocolatey or user installs)
+  # Refresh PATH for this session
+  $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+              [System.Environment]::GetEnvironmentVariable('Path','User')
+  try {
+    $pyver = & python --version 2>$null
+    if ($pyver) { Write-Host "Python installed: $pyver" }
+  } catch { Write-Warning "Python not yet on PATH in this session; it will be available in new terminals." }
+}
+
+# ---- Miniconda (latest by default via official installer) ----
+function Install-Miniconda-Direct {
+  param(
+    [string]$InstallDir,
+    [bool]$ForceReinstall = $false
+  )
+  if (Test-Path $InstallDir) {
+    if ($ForceReinstall) {
+      Write-Host "ForceReinstallMiniconda is ON. Attempting silent uninstall..."
+      $uninstaller = Join-Path $InstallDir 'Uninstall-Miniconda3.exe'
+      if (Test-Path $uninstaller) {
+        Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -NoNewWindow
+      } else {
+        Write-Warning "Uninstaller not found; removing directory."
+        Remove-Item -Recurse -Force $InstallDir
+      }
+    } else {
+      Write-Host "Miniconda already present at $InstallDir (skipping install)."
+      return
+    }
+  }
+
+  $latestUrl = 'https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe'
+  $tmp = Join-Path $env:TEMP "Miniconda3-latest.exe"
+  Write-Host "Downloading Miniconda latest from $latestUrl ..."
+  Invoke-WebRequest -Uri $latestUrl -OutFile $tmp -UseBasicParsing
+
+  # NSIS flags: /S for silent, /InstallationType=AllUsers, /AddToPath=0, /RegisterPython=0, /D=<path> (must be LAST, no quotes)
+  $args = @(
+    "/S",
+    "/InstallationType=AllUsers",
+    "/AddToPath=0",
+    "/RegisterPython=0",
+    "/D=$InstallDir"
+  )
+  Write-Host "Running Miniconda installer (silent) to $InstallDir ..."
+  Start-Process -FilePath $tmp -ArgumentList $args -Wait -NoNewWindow
+  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "Installing Miniconda..."
+if ($MinicondaUseDirectInstaller) {
+  if ($MinicondaInstallDir -match '\s') {
+    throw "MinicondaInstallDir contains spaces. NSIS '/D=' cannot be quoted reliably. Use a path without spaces (e.g., C:\tools\miniconda3)."
+  }
+  Install-Miniconda-Direct -InstallDir $MinicondaInstallDir -ForceReinstall:$ForceReinstallMiniconda
+} else {
+  Choco-Ensure -Pkg miniconda3 -Version $MinicondaVersion
+}
+
+# Locate conda.bat (include the chosen install dir first)
 $condaBatCandidates = @(
+  (Join-Path $MinicondaInstallDir 'condabin\conda.bat'),
   "$env:UserProfile\miniconda3\condabin\conda.bat",
   "$env:ProgramData\miniconda3\condabin\conda.bat",
   "C:\tools\miniconda3\condabin\conda.bat"
 )
 $condaBat = $condaBatCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $condaBat) { throw "Could not find conda.bat (Miniconda). Checked: $($condaBatCandidates -join ', ')" }
+
+# Optional: keep base conda itself fresh
+if ($CondaSelfUpdate) {
+  & $condaBat update -n base -y conda
+  if ($LASTEXITCODE -ne 0) { Write-Warning "conda self-update failed (non-fatal)." }
+}
 
 # Configure conda-forge (no env creation)
 & $condaBat config --set channel_priority strict
@@ -154,7 +236,7 @@ if ($LASTEXITCODE -ne 0) { throw "conda config add conda-forge failed." }
 & $condaBat init powershell
 & $condaBat init cmd.exe
 
-# Ensure PowerShell profile can run (so conda init actually loads)
+# Ensure PowerShell profile can run
 try {
   $cur = Get-ExecutionPolicy -Scope CurrentUser -ErrorAction SilentlyContinue
   if (-not $cur -or $cur -eq 'Restricted' -or $cur -eq 'Undefined') {
@@ -167,7 +249,7 @@ try {
   Write-Warning "Could not set ExecutionPolicy for Windows PowerShell CurrentUser: $_"
 }
 
-# Also set for PowerShell 7 (if installed) — PS 5.1 compatible
+# Also set for PowerShell 7 (if installed)
 try {
   $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
   if ($pwshCmd) {
@@ -192,10 +274,9 @@ if ($InstallCUDA) {
     Write-Host "Skipping NVIDIA driver install (InstallNvidiaDriver=false). Ensure a compatible driver is already installed."
   }
 
-  # CUDA Toolkit (nvcc/headers; PyTorch wheels bundle CUDA runtime)
   Choco-Ensure -Pkg cuda -Version $CudaToolkitVersion
 
-  # Set CUDA_PATH for convenience (Machine scope)
+  # Set CUDA_PATH
   $cudaRoot = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
   if ($cudaRoot) {
     [Environment]::SetEnvironmentVariable('CUDA_PATH', $cudaRoot.FullName, 'Machine')
@@ -209,12 +290,15 @@ if ($InstallCUDA) {
   }
 }
 
-# Git defaults (safe)
+# Git defaults
 & git config --global core.autocrlf input
 & git config --global init.defaultBranch main
+& git lfs install | Out-Null
 
 Write-Host "Provisioning complete (profile: $Profile)."
-Write-Host "Miniconda installed. conda-forge enabled with strict priority."
+if ($InstallPython)        { Write-Host "System Python installed (with venv & pip). Use 'py -3 -m venv .venv' or 'python -m venv .venv'." }
+Write-Host "Miniconda installed (via $([bool]$MinicondaUseDirectInstaller ? 'direct' : 'Chocolatey')). conda-forge enabled with strict priority."
+if ($CondaSelfUpdate)      { Write-Host "Base 'conda' self-update attempted." }
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
 Write-Host "ExecutionPolicy set to RemoteSigned (CurrentUser) for Windows PowerShell$(if (Get-Command pwsh -ErrorAction SilentlyContinue) { ', and PowerShell 7' } else { '' })."
 if ($InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
