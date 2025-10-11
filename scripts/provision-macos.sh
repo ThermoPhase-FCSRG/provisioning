@@ -20,7 +20,6 @@ INSTALL_MINIFORGE=true
 MINIFORGE_PREFIX="$HOME/miniforge3"
 
 INSTALL_LLVM=true              # Installs llvm and libomp via Homebrew
-# (Python ML libs are intentionally NOT installed here; use conda later.)
 
 # ---------- Helpers ----------
 log()  { printf "\033[1;32m[INFO]\033[0m %s\n" "$*"; }
@@ -28,15 +27,15 @@ warn() { printf "\033[1;33m[WARN]\033[0m %s\n" "$*"; }
 err()  { printf "\033[1;31m[ERR ]\033[0m %s\n" "$*" >&2; }
 is_arm() { [[ "$(uname -m)" == "arm64" ]]; }
 need_admin() {
-  # We don't run entire script with sudo; Homebrew prefers user context.
-  # Some steps (Rosetta, casks) will prompt for sudo when needed.
   if ! groups | grep -q admin; then
     warn "Your user is not in the admin group. Some steps may fail (casks, Rosetta)."
   fi
 }
 
+# Bash 3.2–compatible boolean parser (lowercase via tr)
 parse_bool() {
-  case "${1,,}" in
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$v" in
     true|1|yes|y|on)  echo "true" ;;
     false|0|no|n|off) echo "false" ;;
     *) err "Invalid boolean value: '$1' (use true/false)"; exit 2 ;;
@@ -61,7 +60,7 @@ Usage: bash provision-macos.sh [flags]
 Profiles (defaults if you omit flags):
   --profile=default   VS Code ON, Docker ON
   --profile=minimal   VS Code ON, Docker OFF
-  --profile=gpu       VS Code ON, Docker ON (note: CUDA unsupported on macOS; see notes)
+  --profile=gpu       VS Code ON, Docker ON (note: CUDA unsupported on macOS)
 
 Flags (override profile defaults):
   --install-vscode=true|false
@@ -71,11 +70,6 @@ Flags (override profile defaults):
   --install-miniforge=true|false
   --miniforge-prefix=/path/to/miniforge3   # default: $HOME/miniforge3
   --install-llvm=true|false
-
-Examples:
-  bash provision-macos.sh
-  bash provision-macos.sh --profile=minimal
-  bash provision-macos.sh --profile=gpu --install-iterm2=false
 USAGE
       exit 0;;
     *) err "Unknown flag: $arg"; exit 2;;
@@ -88,9 +82,7 @@ case "$PROFILE" in
     INSTALL_DOCKER=false
     ;;
   gpu)
-    # Nothing "extra" to install; CUDA not supported on macOS.
-    # Kept for parity with other OS scripts.
-    :
+    : # kept for parity; CUDA not available on modern macOS
     ;;
   default) ;;
   *) err "Invalid --profile value: $PROFILE (use default|minimal|gpu)"; exit 2;;
@@ -105,15 +97,12 @@ log "Architecture: $(uname -m)"
 # ---------- 1) Ensure Xcode Command Line Tools ----------
 if ! xcode-select -p >/dev/null 2>&1; then
   log "Installing Xcode Command Line Tools..."
-  # Try automated softwareupdate path first (non-interactive)
   touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
-  # shellcheck disable=SC2016
   PROD=$(/usr/sbin/softwareupdate -l 2>/dev/null | awk -F'*' '/\* Command Line (Developer )?Tools/ {print $2}' | sed -e 's/^ *//' | tail -n1 || true)
   if [[ -n "${PROD:-}" ]]; then
     sudo /usr/sbin/softwareupdate -i "$PROD" -v || true
     sudo /usr/bin/xcode-select --switch /Library/Developer/CommandLineTools || true
   else
-    # Fallback to interactive prompt
     xcode-select --install || true
     warn "If a dialog popped up, please click 'Install'. You can re-run this script afterwards."
   fi
@@ -131,7 +120,6 @@ fi
 # Wire brew into THIS shell and future shells
 if is_arm; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
-  # Add to zsh and bash startup if not present
   grep -q '/opt/homebrew/bin/brew shellenv' "${ZDOTDIR:-$HOME}"/.zprofile 2>/dev/null || {
     echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "${ZDOTDIR:-$HOME}"/.zprofile
   }
@@ -180,9 +168,6 @@ brew_install pkg-config
 if [[ "$INSTALL_LLVM" == "true" ]]; then
   brew_install llvm
   brew_install libomp
-  # Note: Using Homebrew LLVM typically requires CC/CXX overrides in builds:
-  # export CC="$(brew --prefix)/opt/llvm/bin/clang"
-  # export CXX="$(brew --prefix)/opt/llvm/bin/clang++"
 fi
 
 # ---------- 4) Apps (casks) ----------
@@ -231,7 +216,6 @@ if [[ "$INSTALL_MINIFORGE" == "true" ]]; then
 
   log "Configuring conda-forge (strict) and initializing shells..."
   "$CONDA_BIN" config --set channel_priority strict
-  # Miniforge already defaults to conda-forge; call is idempotent:
   "$CONDA_BIN" config --add channels conda-forge || true
   "$CONDA_BIN" init zsh || true
   "$CONDA_BIN" init bash || true
@@ -251,5 +235,4 @@ if [[ "$INSTALL_MINIFORGE" == "true" ]]; then
   echo "  - Open a NEW terminal to get 'conda' on PATH, or run: 'source \"$MINIFORGE_PREFIX/etc/profile.d/conda.sh\"' then 'conda activate'."
 fi
 
-# ----- Important GPU note for macOS -----
-warn "CUDA is not supported on current macOS. For PyTorch on Apple Silicon, use the MPS (Metal) device via conda/pip wheels and 'torch.device(\"mps\")'."
+warn "CUDA is not supported on current macOS. For PyTorch on Apple Silicon, use the MPS (Metal) device."
