@@ -20,6 +20,7 @@ INSTALL_MINIFORGE=true
 MINIFORGE_PREFIX="$HOME/miniforge3"
 
 INSTALL_LLVM=true              # Installs llvm and libomp via Homebrew
+INSTALL_PYTHON=true            # Homebrew Python (includes venv)
 
 # ---------- Helpers ----------
 log()  { printf "\033[1;32m[INFO]\033[0m %s\n" "$*"; }
@@ -53,6 +54,7 @@ for arg in "$@"; do
     --install-miniforge=*)    INSTALL_MINIFORGE=$(parse_bool "${arg#*=}");;
     --miniforge-prefix=*)     MINIFORGE_PREFIX="${arg#*=}";;
     --install-llvm=*)         INSTALL_LLVM=$(parse_bool "${arg#*=}");;
+    --install-python=*)       INSTALL_PYTHON=$(parse_bool "${arg#*=}");;
     -h|--help)
       cat <<'USAGE'
 Usage: bash provision-macos.sh [flags]
@@ -70,6 +72,7 @@ Flags (override profile defaults):
   --install-miniforge=true|false
   --miniforge-prefix=/path/to/miniforge3   # default: $HOME/miniforge3
   --install-llvm=true|false
+  --install-python=true|false              # Homebrew Python (with venv), default: true
 USAGE
       exit 0;;
     *) err "Unknown flag: $arg"; exit 2;;
@@ -90,7 +93,7 @@ esac
 
 need_admin
 log "Profile: $PROFILE"
-log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER iTerm2:$INSTALL_ITERM2 Miniforge:$INSTALL_MINIFORGE LLVM:$INSTALL_LLVM Rosetta:$INSTALL_ROSETTA"
+log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER iTerm2:$INSTALL_ITERM2 Miniforge:$INSTALL_MINIFORGE LLVM:$INSTALL_LLVM Python:$INSTALL_PYTHON Rosetta:$INSTALL_ROSETTA"
 log "Miniforge prefix -> $MINIFORGE_PREFIX"
 log "Architecture: $(uname -m)"
 
@@ -98,13 +101,9 @@ log "Architecture: $(uname -m)"
 if ! xcode-select -p >/dev/null 2>&1; then
   log "Installing Xcode Command Line Tools..."
   touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
-  # Get the list of available software updates
   SW_UPDATE_LIST=$(/usr/sbin/softwareupdate -l 2>/dev/null)
-  # Filter lines containing "Command Line Tools" (or "Command Line Developer Tools")
   CLT_LINES=$(echo "$SW_UPDATE_LIST" | awk -F'*' '/\* Command Line (Developer )?Tools/ {print $2}')
-  # Trim leading spaces from each line
   CLT_PRODUCTS=$(echo "$CLT_LINES" | sed -e 's/^ *//')
-  # Select the last matching product (if multiple)
   PROD=$(echo "$CLT_PRODUCTS" | tail -n1 || true)
   if [[ -n "${PROD:-}" ]]; then
     sudo /usr/sbin/softwareupdate -i "$PROD" -v || true
@@ -179,6 +178,11 @@ if [[ "$INSTALL_LLVM" == "true" ]]; then
   brew_install libomp
 fi
 
+if [[ "$INSTALL_PYTHON" == "true" ]]; then
+  log "Installing Homebrew Python (includes venv)..."
+  brew_install python
+fi
+
 # ---------- 4) Apps (casks) ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
   brew_install_cask visual-studio-code
@@ -237,6 +241,9 @@ echo "• Homebrew: $(brew --version | head -n1)"
 core_tools="git, git-lfs, cmake, ninja, pkg-config"
 if [[ "$INSTALL_LLVM" == "true" ]]; then
   core_tools="$core_tools, llvm, libomp"
+fi
+if [[ "$INSTALL_PYTHON" == "true" ]]; then
+  core_tools="$core_tools, python (with venv)"
 fi
 echo "• Core tools: $core_tools."
 [[ "$INSTALL_VSCODE" == "true" ]] && echo "• VS Code installed (launch: 'Visual Studio Code')."
