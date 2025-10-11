@@ -232,7 +232,11 @@ fi
 echo
 log "Provisioning complete (profile: $PROFILE)."
 echo "• Homebrew: $(brew --version | head -n1)"
-echo "• Core tools: git, git-lfs, cmake, ninja, pkg-config$([[ "$INSTALL_LLVM" == "true" ]] && echo ', llvm, libomp')."
+core_tools="git, git-lfs, cmake, ninja, pkg-config"
+if [[ "$INSTALL_LLVM" == "true" ]]; then
+  core_tools="$core_tools, llvm, libomp"
+fi
+echo "• Core tools: $core_tools."
 [[ "$INSTALL_VSCODE" == "true" ]] && echo "• VS Code installed (launch: 'Visual Studio Code')."
 [[ "$INSTALL_ITERM2"  == "true" ]] && echo "• iTerm2 installed."
 [[ "$INSTALL_DOCKER"  == "true" ]] && echo "• Docker Desktop installed (launch 'Docker' once to finish setup)."
