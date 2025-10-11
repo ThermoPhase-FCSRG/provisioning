@@ -101,7 +101,7 @@ if ! xcode-select -p >/dev/null 2>&1; then
   # Get the list of available software updates
   SW_UPDATE_LIST=$(/usr/sbin/softwareupdate -l 2>/dev/null)
   # Filter lines containing "Command Line Tools" (or "Command Line Developer Tools")
-  CLT_LINES=$(echo "$SW_UPDATE_LIST" | awk -F'*' '/\* Command Line \(Developer \)\?Tools/ {print $2}')
+  CLT_LINES=$(echo "$SW_UPDATE_LIST" | awk -F'*' '/\* Command Line (Developer )?Tools/ {print $2}')
   # Trim leading spaces from each line
   CLT_PRODUCTS=$(echo "$CLT_LINES" | sed -e 's/^ *//')
   # Select the last matching product (if multiple)
@@ -133,7 +133,18 @@ if is_arm; then
   }
   grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
     echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
-}
+  }
+else
+  BREW_PATH="/usr/local/bin/brew"
+  eval "$(${BREW_PATH} shellenv)"
+  grep -q "${BREW_PATH} shellenv" "${ZDOTDIR:-$HOME}"/.zprofile 2>/dev/null || {
+    echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "${ZDOTDIR:-$HOME}"/.zprofile
+  }
+  grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
+    echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
+  }
+fi
+
 BREW="$(command -v brew)"
 log "Homebrew at: $BREW"
 brew update
