@@ -134,10 +134,6 @@ if is_arm; then
   grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
     echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
 }
-grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
-  echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
-}
-
 BREW="$(command -v brew)"
 log "Homebrew at: $BREW"
 brew update
