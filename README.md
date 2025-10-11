@@ -7,6 +7,7 @@ These scripts are CLI-configurable and expose small profiles to make running the
 ## Scripts
 
 - `scripts/provision-ubuntu.sh` — Bash script intended to be run as root (sudo). Supports profiles and CLI flags.
+- `scripts/provision-macos.sh` — Bash script intended to run on macOS (user context). Supports profiles and CLI flags. Installs Homebrew, common casks (VS Code, Docker), Miniforge (conda-forge), and developer tooling.
 - `scripts/provision-win.ps1` — PowerShell script intended to run in an elevated PowerShell. Supports profiles and named parameters.
 
 Quick reference
@@ -21,6 +22,19 @@ Ubuntu CLI flags
 | `--install-cuda` | `false` | Install NVIDIA CUDA toolkit package |
 | `--install-nvidia-driver` | `false` | Run `ubuntu-drivers autoinstall` to install GPU driver |
 | `--cuda-toolkit-pkg` | `cuda-toolkit-12-4` | Specific CUDA toolkit package name to install |
+
+macOS CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `default` | profile preset: `default`, `minimal`, `gpu` |
+| `--install-vscode` | `true` | Install Visual Studio Code via Homebrew cask |
+| `--install-docker` | `true` | Install Docker Desktop via Homebrew cask |
+| `--install-iterm2` | `true` | Install iTerm2 via Homebrew cask |
+| `--install-rosetta` | `false` | Install Rosetta 2 on Apple Silicon |
+| `--install-miniforge` | `true` | Install Miniforge (conda-forge) |
+| `--miniforge-prefix` | `$HOME/miniforge3` | Install path for Miniforge |
+| `--install-llvm` | `true` | Install Homebrew llvm and libomp |
 
 Windows PowerShell parameters
 
@@ -39,6 +53,7 @@ Windows PowerShell parameters
 ## What they install (summary)
 
 - Ubuntu: base dev tools (git, git-lfs, build-essential, cmake, ninja, unzip/xz/7zip), optional VS Code, optional Docker Engine, Miniconda for the invoking user (conda-forge configured), optional CUDA toolkit + driver.
+- macOS: Homebrew, core dev tooling via Homebrew (git, git-lfs, cmake, ninja, pkg-config, optional llvm/libomp), common casks (VS Code, iTerm2, Docker Desktop), Miniforge (conda-forge) installed into the user's home.
 - Windows: core tools via Chocolatey (git, 7zip, cmake, ninja, Visual Studio Build Tools), optional VS Code, Windows Terminal, Cmder, Docker Desktop, Miniconda, optional CUDA toolkit + driver.
 
 ## Ubuntu: usage, profiles and CLI flags
@@ -100,6 +115,48 @@ Notes & gotchas
 - Docker: after install, log out/in or run `newgrp docker` to use Docker without sudo.
 - CUDA: if the NVIDIA driver is installed, a reboot is recommended.
 
+## macOS: usage, profiles and CLI flags
+
+Run from the repository root on a macOS machine. This script is intended to be run as a normal user (not sudo). It installs Homebrew, user-scoped casks, and Miniforge into your home by default.
+
+Basic run:
+
+```bash
+bash scripts/provision-macos.sh
+```
+
+Profiles
+
+- `--profile=default`  (default) -> VS Code ON, Docker ON
+- `--profile=minimal`  -> VS Code ON, Docker OFF
+- `--profile=gpu`      -> VS Code ON, Docker ON (CUDA unsupported on macOS; kept for parity)
+
+CLI flags (override profile defaults)
+
+- `--install-vscode=true|false`
+- `--install-docker=true|false`
+- `--install-iterm2=true|false`
+- `--install-rosetta=true|false`  # Apple Silicon only
+- `--install-miniforge=true|false`
+- `--miniforge-prefix=/path/to/miniforge3`  # default: $HOME/miniforge3
+- `--install-llvm=true|false`
+
+What the script does (high level)
+
+- Installs Homebrew if missing and wires it into your shell startup files.
+- Installs dev tools via Homebrew (git, git-lfs, cmake, ninja, pkg-config, optional llvm/libomp).
+- Installs casks: VS Code, iTerm2, Docker Desktop (if enabled).
+- Installs Miniforge into `--miniforge-prefix`, sets conda-forge (strict), runs `conda init` for bash and zsh.
+- Optionally installs Rosetta 2 on Apple Silicon when requested.
+
+Notes & gotchas
+
+- Run as a normal user; Homebrew prefers user context.
+- After installing Docker Desktop, launch the app once to finish setup and grant permissions.
+- If Rosetta is enabled, you may be prompted for your password.
+- Open a NEW terminal to get `conda` on PATH, or run `source "$MINIFORGE_PREFIX/etc/profile.d/conda.sh"` then `conda activate`.
+- CUDA is not supported on current macOS. For PyTorch on Apple Silicon, use MPS (`torch.device("mps")`).
+
 ## Windows: usage and parameters
 
 Run from an elevated PowerShell (Admin). The script exposes a `param()` block so you can pass named parameters on the command line.
@@ -160,6 +217,17 @@ docker --version      # if Docker enabled
 conda --version
 python -V
 nvcc --version        # if CUDA installed
+```
+
+macOS (new terminal):
+
+```bash
+git --version
+code --version        # if VS Code enabled
+docker --version      # if Docker Desktop enabled
+conda --version
+python -V
+# nvcc not expected on macOS; CUDA is unsupported
 ```
 
 Windows (open a new elevated PowerShell or normal PowerShell after admin tasks complete):
