@@ -98,7 +98,14 @@ log "Architecture: $(uname -m)"
 if ! xcode-select -p >/dev/null 2>&1; then
   log "Installing Xcode Command Line Tools..."
   touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
-  PROD=$(/usr/sbin/softwareupdate -l 2>/dev/null | awk -F'*' '/\* Command Line (Developer )?Tools/ {print $2}' | sed -e 's/^ *//' | tail -n1 || true)
+  # Get the list of available software updates
+  SW_UPDATE_LIST=$(/usr/sbin/softwareupdate -l 2>/dev/null)
+  # Filter lines containing "Command Line Tools" (or "Command Line Developer Tools")
+  CLT_LINES=$(echo "$SW_UPDATE_LIST" | awk -F'*' '/\* Command Line (Developer )?Tools/ {print $2}')
+  # Trim leading spaces from each line
+  CLT_PRODUCTS=$(echo "$CLT_LINES" | sed -e 's/^ *//')
+  # Select the last matching product (if multiple)
+  PROD=$(echo "$CLT_PRODUCTS" | tail -n1 || true)
   if [[ -n "${PROD:-}" ]]; then
     sudo /usr/sbin/softwareupdate -i "$PROD" -v || true
     sudo /usr/bin/xcode-select --switch /Library/Developer/CommandLineTools || true
