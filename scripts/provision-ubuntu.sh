@@ -44,58 +44,87 @@ file_contains_repo() {
 }
 
 ensure_ms_keyring() {
-  # Ensure a dearmored Microsoft key exists at the canonical location.
-  local key="/etc/apt/keyrings/packages.microsoft.gpg"
+  # Ensure /etc/apt/keyrings/packages.microsoft.gpg exists.
+  local canonical="/etc/apt/keyrings/packages.microsoft.gpg"
   install -d -m 0755 /etc/apt/keyrings
-  if [[ ! -f "$key" ]]; then
-    if ! command -v gpg >/dev/null 2>&1; then
-      # Try best-effort install; may fail if sources are broken, but most systems already have gpg.
-      apt-get update -y || true
-      apt-get install -y gnupg curl ca-certificates || true
-    fi
-    log "Creating Microsoft keyring at $key..."
-    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$key"
-    chmod 0644 "$key"
+  if [[ -f "$canonical" ]]; then
+    echo "$canonical"; return
   fi
-  echo "$key"
+
+  # If the older path exists, reuse it by copying (no apt or gpg needed).
+  local old="/usr/share/keyrings/microsoft.gpg"
+  if [[ -f "$old" ]]; then
+    cp -f "$old" "$canonical"
+    chmod 0644 "$canonical"
+    echo "$canonical"; return
+  fi
+
+  # Fallback: dearmor fresh key (assumes gnupg exists on standard Ubuntu).
+  if ! command -v gpg >/dev/null 2>&1; then
+    # best-effort; won't run apt update here to avoid signed-by conflicts
+    warn "gnupg not found; attempting to install minimal tools..."
+    apt-get install -y --no-install-recommends gnupg ca-certificates curl || true
+  fi
+  log "Creating Microsoft keyring at $canonical..."
+  curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$canonical"
+  chmod 0644 "$canonical"
+  echo "$canonical"
+}
+
+disable_all_code_sources() {
+  # Disable ANY source (list/sources) that points at the Code repo, plus entries in /etc/apt/sources.list.
+  local needle='packages\.microsoft\.com/(repos/)?code'
+  local f
+
+  # 1) comment out lines in the main sources.list
+  if [[ -f /etc/apt/sources.list ]] && grep -Eq "$needle" /etc/apt/sources.list; then
+    sed -i -E 's|^deb (.*packages\.microsoft\.com/(repos/)?code.*)$|# disabled duplicate: deb \1|' /etc/apt/sources.list || true
+  fi
+
+  # 2) rename any conflicting .list/.sources files so apt ignores them
+  while IFS= read -r -d '' f; do
+    # Skip our canonical file if present; we will (re)create it later anyway
+    if [[ "$f" == "/etc/apt/sources.list.d/vscode.list" ]]; then
+      rm -f "$f" || true
+      continue
+    fi
+    mv -f "$f" "${f}.disabled" || true
+  done < <(grep -RslZ --include='*.list' --include='*.sources' -E "$needle" /etc/apt/sources.list.d 2>/dev/null || true)
+}
+
+install_code_repo_canonical() {
+  # After disabling duplicates, create a single canonical .list entry using our canonical keyring.
+  local key_path="$(ensure_ms_keyring)"
+  local arch="$(dpkg --print-architecture)"
+  echo "deb [arch=${arch} signed-by=${key_path}] https://packages.microsoft.com/repos/code stable main" \
+    > /etc/apt/sources.list.d/vscode.list
+  chmod 0644 /etc/apt/sources.list.d/vscode.list
+  log "Set Code repo at /etc/apt/sources.list.d/vscode.list (signed-by=${key_path})"
 }
 
 fix_vscode_repo_conflicts() {
-  # Standardize any Code repo definitions before the first apt update.
-  # Canonical: /etc/apt/sources.list.d/vscode.list using /etc/apt/keyrings/packages.microsoft.gpg
-  local needle='packages\.microsoft\.com/repos/code'
-  local canonical_list='/etc/apt/sources.list.d/vscode.list'
-  local key_path
-  key_path="$(ensure_ms_keyring)"
+  # Always resolve Code repo conflicts BEFORE any apt update.
+  local have_any=false
+  local needle='packages\.microsoft\.com/(repos/)?code'
 
-  # Gather all files containing the Code repo
-  local matches=()
-  while IFS= read -r -d '' f; do matches+=("$f"); done < <(
-    grep -RslZ --include='*.list' --include='*.sources' -E "$needle" \
-      /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true
-  )
-
-  if (( ${#matches[@]} == 0 )); then
-    # Fresh add
-    local arch="$(dpkg --print-architecture)"
-    echo "deb [arch=${arch} signed-by=${key_path}] https://packages.microsoft.com/repos/code stable main" \
-      > "$canonical_list"
-    log "Added Code repo at $canonical_list"
-    return
+  if grep -Eq "$needle" /etc/apt/sources.list 2>/dev/null; then
+    have_any=true
+  fi
+  if grep -Rqs --include='*.list' --include='*.sources' -E "$needle" /etc/apt/sources.list.d 2>/dev/null; then
+    have_any=true
   fi
 
-  # Write/overwrite canonical file with our standardized line
-  local arch="$(dpkg --print-architecture)"
-  echo "deb [arch=${arch} signed-by=${key_path}] https://packages.microsoft.com/repos/code stable main" \
-    > "$canonical_list"
-  log "Rewrote Code repo to $canonical_list (signed-by=${key_path})"
+  if [[ "$have_any" == "true" ]]; then
+    log "Detected existing VS Code repo entries — normalizing..."
+    disable_all_code_sources
+  fi
 
-  # Comment out duplicates everywhere else (including conflicting signed-by)
-  for f in "${matches[@]}"; do
-    [[ "$f" == "$canonical_list" ]] && continue
-    # Comment every Code repo line to avoid conflicts
-    sed -i -E 's|^deb (.*packages\.microsoft\.com/repos/code.*)$|# disabled duplicate: deb \1|' "$f" || true
-  done
+  if [[ "${INSTALL_VSCODE}" == "true" ]]; then
+    install_code_repo_canonical
+  else
+    # If user does not want VS Code installed, keep repo disabled to avoid future conflicts.
+    log "VS Code installation disabled; any existing Code repos were disabled."
+  fi
 }
 
 # ---------- Parse CLI ----------
@@ -163,10 +192,8 @@ log "Profile: $PROFILE"
 log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_NVIDIA_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG"
 log "Installing for user: $REAL_USER (home: $REAL_HOME)"
 
-# ---------- PRE-FIX: VS Code repo conflicts BEFORE first apt update ----------
-if [[ "$INSTALL_VSCODE" == "true" ]]; then
-  fix_vscode_repo_conflicts
-fi
+# ---------- PRE-FIX: VS Code repo conflicts BEFORE any apt update ----------
+fix_vscode_repo_conflicts
 
 # ---------- Base packages ----------
 export DEBIAN_FRONTEND=noninteractive
@@ -179,7 +206,7 @@ apt-get install -y --no-install-recommends \
   unzip xz-utils p7zip-full
 git lfs install || true
 
-# ---------- VS Code install (repo now standardized) ----------
+# ---------- VS Code install ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
   apt-get update -y
   apt-get install -y code
