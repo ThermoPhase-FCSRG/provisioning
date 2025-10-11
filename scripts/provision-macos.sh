@@ -133,10 +133,10 @@ if is_arm; then
   }
   grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
     echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
-  echo "eval \"\$($BREW_SHELLENV_PATH)\"" >> "${ZDOTDIR:-$HOME}"/.zprofile
+  echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "${ZDOTDIR:-$HOME}"/.zprofile
 }
-grep -q "$BREW_SHELLENV_PATH" "$HOME/.bash_profile" 2>/dev/null || {
-  echo "eval \"\$($BREW_SHELLENV_PATH)\"" >> "$HOME/.bash_profile"
+grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
+  echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
 }
 
 BREW="$(command -v brew)"
