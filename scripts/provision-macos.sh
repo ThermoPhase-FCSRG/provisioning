@@ -126,12 +126,13 @@ fi
 
 # Wire brew into THIS shell and future shells
 if is_arm; then
-  BREW_SHELLENV_PATH="/opt/homebrew/bin/brew shellenv"
-else
-  BREW_SHELLENV_PATH="/usr/local/bin/brew shellenv"
-fi
-eval "$($BREW_SHELLENV_PATH)"
-grep -q "$BREW_SHELLENV_PATH" "${ZDOTDIR:-$HOME}"/.zprofile 2>/dev/null || {
+  BREW_PATH="/opt/homebrew/bin/brew"
+  eval "$(${BREW_PATH} shellenv)"
+  grep -q "${BREW_PATH} shellenv" "${ZDOTDIR:-$HOME}"/.zprofile 2>/dev/null || {
+    echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "${ZDOTDIR:-$HOME}"/.zprofile
+  }
+  grep -q "${BREW_PATH} shellenv" "$HOME/.bash_profile" 2>/dev/null || {
+    echo "eval \"\$(${BREW_PATH} shellenv)\"" >> "$HOME/.bash_profile"
   echo "eval \"\$($BREW_SHELLENV_PATH)\"" >> "${ZDOTDIR:-$HOME}"/.zprofile
 }
 grep -q "$BREW_SHELLENV_PATH" "$HOME/.bash_profile" 2>/dev/null || {
