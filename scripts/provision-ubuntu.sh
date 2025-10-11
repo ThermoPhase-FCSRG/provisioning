@@ -18,8 +18,6 @@ INSTALL_NVIDIA_DRIVER=false
 
 CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"   # e.g., "cuda-toolkit-12-4" or "cuda-toolkit"
 
-# You can add more pins here if you want later (apt uses latest by default)
-
 # ---------- Helpers ----------
 log()  { echo -e "\033[1;32m[INFO]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
@@ -40,14 +38,12 @@ parse_bool() {
   esac
 }
 
+file_contains_repo() {
+  local path="$1" needle="$2"
+  [[ -f "$path" ]] && grep -qE "$needle" "$path"
+}
+
 # ---------- Parse CLI ----------
-# Supported flags:
-#   --profile=default|minimal|gpu
-#   --install-vscode=true|false
-#   --install-docker=true|false
-#   --install-cuda=true|false
-#   --install-nvidia-driver=true|false
-#   --cuda-toolkit-pkg=<deb package name>
 for arg in "$@"; do
   case "$arg" in
     --profile=*)                 PROFILE="${arg#*=}";;
@@ -84,18 +80,14 @@ USAGE
   esac
 done
 
-# ---------- Apply profile defaults (only those not explicitly overridden) ----------
-# (Since flags are parsed directly into vars, we set profile-based defaults first then rely on flags
-# already having overridden them. Here we adjust ONLY when user didn't pass flags — but we can't detect that
-# robustly without tracking. So we set profile defaults BEFORE parsing in a typical design. For simplicity:
-# The declared defaults represent 'default' profile already. We only tweak for other profiles here.)
+# ---------- Apply profile defaults ----------
 case "$PROFILE" in
   minimal)
-    INSTALL_DOCKER=${INSTALL_DOCKER:-false}; INSTALL_DOCKER=false
+    INSTALL_DOCKER=false
     ;;
   gpu)
-    INSTALL_CUDA=${INSTALL_CUDA:-false}; INSTALL_CUDA=true
-    INSTALL_NVIDIA_DRIVER=${INSTALL_NVIDIA_DRIVER:-false}; INSTALL_NVIDIA_DRIVER=true
+    INSTALL_CUDA=true
+    INSTALL_NVIDIA_DRIVER=true
     ;;
   default) ;;
   *)
@@ -127,28 +119,80 @@ apt-get install -y --no-install-recommends \
   unzip xz-utils p7zip-full
 git lfs install || true
 
-# ---------- VS Code (optional) ----------
+# ---------- VS Code repo (idempotent & conflict-safe) ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
-  log "Installing VS Code (Microsoft repo)..."
-  install -d -m 0755 /etc/apt/keyrings
-  curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/packages.microsoft.gpg
-  source /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" \
-    > /etc/apt/sources.list.d/vscode.list
+  log "Ensuring VS Code repo..."
+  # Look for any existing entries pointing to the Code repo
+  CODE_NEEDLE='https?://packages\.microsoft\.com/repos/code'
+  existing_files=()
+  while IFS= read -r -d '' f; do existing_files+=("$f"); done < <(grep -RslZ --include='*.list' --include='*.sources' -E "$CODE_NEEDLE" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true)
+
+  if (( ${#existing_files[@]} > 0 )); then
+    # Use the first existing source as the canonical one
+    canon="${existing_files[0]}"
+    log "Found existing Code repo: $canon"
+
+    # Extract signed-by= path if present
+    signed_by="$(grep -Eo 'signed-by=[^ ]+' "$canon" | head -n1 | cut -d= -f2 || true)"
+    if [[ -n "$signed_by" ]]; then
+      # Make sure that key exists there
+      install -d -m 0755 "$(dirname "$signed_by")"
+      if [[ ! -f "$signed_by" ]]; then
+        log "Creating keyring at $signed_by (dearmoring Microsoft key)..."
+        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$signed_by"
+        chmod 0644 "$signed_by"
+      fi
+    else
+      # No signed-by in existing file; add one safely by rewriting canonical file.
+      # Prefer /etc/apt/keyrings path.
+      key="/etc/apt/keyrings/packages.microsoft.gpg"
+      install -d -m 0755 /etc/apt/keyrings
+      if [[ ! -f "$key" ]]; then
+        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$key"
+        chmod 0644 "$key"
+      fi
+      arch="$(dpkg --print-architecture)"
+      echo "deb [arch=${arch} signed-by=${key}] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+      log "Rewrote Code source to /etc/apt/sources.list.d/vscode.list with signed-by=${key}"
+      # Comment any other duplicates to avoid conflicts
+      for f in "${existing_files[@]}"; do
+        [[ "$f" == "/etc/apt/sources.list.d/vscode.list" ]] && continue
+        sed -i -E 's|^deb |# disabled duplicate: deb |' "$f" || true
+      done
+    fi
+  else
+    # Fresh add (no existing sources)
+    install -d -m 0755 /etc/apt/keyrings
+    key="/etc/apt/keyrings/packages.microsoft.gpg"
+    if [[ ! -f "$key" ]]; then
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$key"
+      chmod 0644 "$key"
+    fi
+    arch="$(dpkg --print-architecture)"
+    echo "deb [arch=${arch} signed-by=${key}] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+    log "Added Code repo at /etc/apt/sources.list.d/vscode.list"
+  fi
+
   apt-get update -y
   apt-get install -y code
 fi
 
-# ---------- Docker Engine (optional, official repo) ----------
+# ---------- Docker Engine (optional, official repo, idempotent) ----------
 if [[ "$INSTALL_DOCKER" == "true" ]]; then
-  log "Installing Docker Engine (Docker official apt repo)..."
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-  arch="$(dpkg --print-architecture)"
-  codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-  echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${codename} stable" \
-    > /etc/apt/sources.list.d/docker.list
+  log "Ensuring Docker Engine repo..."
+  if ! file_contains_repo "/etc/apt/sources.list.d/docker.list" 'download\.docker\.com/linux/ubuntu'; then
+    install -m 0755 -d /etc/apt/keyrings
+    if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+    fi
+    arch="$(dpkg --print-architecture)"
+    codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+    echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${codename} stable" \
+      > /etc/apt/sources.list.d/docker.list
+  else
+    log "Docker repo already present."
+  fi
   apt-get update -y
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   usermod -aG docker "$REAL_USER" || warn "Could not add ${REAL_USER} to docker group"
