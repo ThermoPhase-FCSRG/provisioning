@@ -1,99 +1,155 @@
 # provisioning
 
-Minimal, repeatable provisioning scripts for developer machines on Ubuntu and Windows. They install common tooling (Git, VS Code, Docker), set up a Python environment via Miniconda with conda-forge, and optionally prepare CUDA.
+Provisioning scripts for developer machines on Ubuntu and Windows. They install common tooling (Git, VS Code, Docker), set up a user-scoped Miniconda with conda-forge, and optionally prepare CUDA.
 
-Works well for fresh machines or CI images. Re-runnable and idempotent-ish.
+These scripts are CLI-configurable and expose small profiles to make running them predictable and repeatable.
 
-## What these scripts install
+## Scripts
 
-- Ubuntu (`scripts/provision-ubuntu.sh`):
-  - Base tools: git, git-lfs, build-essential, cmake, ninja, unzip/xz/7zip
-  - Optional: VS Code (Microsoft repo)
-  - Optional: Docker Engine (Docker official apt repo) and user group membership
-  - Miniconda for the invoking user, conda-forge enabled (strict priority), shell init (bash/zsh)
-  - Optional: CUDA toolkit via NVIDIA apt repo and (optionally) NVIDIA driver
+- `scripts/provision-ubuntu.sh` — Bash script intended to be run as root (sudo). Supports profiles and CLI flags.
+- `scripts/provision-win.ps1` — PowerShell script intended to run in an elevated PowerShell. Supports profiles and named parameters.
 
-- Windows (`scripts/provision-win.ps1`):
-  - Git, 7zip, CMake, Ninja
-  - Visual Studio 2022 Build Tools (MSVC, MSBuild, CMake integration, Win11 SDK)
-  - Optional: VS Code, Windows Terminal, Cmder, Docker Desktop
-  - Miniconda, conda-forge enabled (strict), shell init for PowerShell and cmd
-  - Optional: CUDA toolkit and (optionally) NVIDIA display driver
+Quick reference
 
-## Supported platforms
+Ubuntu CLI flags
 
-- Ubuntu 22.04/24.04 x86_64 (bare metal or VM). For WSL2, read the Docker note below.
-- Windows 10/11 x64 with administrative rights.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `default` | profile preset: `default`, `minimal`, `gpu` |
+| `--install-vscode` | `true` | Install Microsoft VS Code repo + `code` package |
+| `--install-docker` | `true` | Install Docker Engine from Docker apt repo |
+| `--install-cuda` | `false` | Install NVIDIA CUDA toolkit package |
+| `--install-nvidia-driver` | `false` | Run `ubuntu-drivers autoinstall` to install GPU driver |
+| `--cuda-toolkit-pkg` | `cuda-toolkit-12-4` | Specific CUDA toolkit package name to install |
 
-ARM64: The Ubuntu script currently downloads the x86_64 Miniconda installer. If you are on ARM, change the installer URL in the script accordingly.
+Windows PowerShell parameters
 
-## Quick start
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-Profile` | `default` | profile preset: `default`, `minimal`, `gpu` |
+| `-InstallVSCode` | `$true` | Install VS Code via Chocolatey |
+| `-InstallDocker` | `$true` | Install Docker Desktop via Chocolatey |
+| `-InstallWindowsTerminal` | `$true` | Install Windows Terminal |
+| `-InstallCmder` | `$true` | Install Cmder (or CmderMini via `-CmderPackageId`) |
+| `-InstallCUDA` | `$false` | Install CUDA toolkit via Chocolatey |
+| `-InstallNvidiaDriver` | `$false` | Install NVIDIA display driver via Chocolatey |
+| `-<Something>Version` | `$null` | Optional version pin (strings) for many packages (e.g., `-CudaToolkitVersion`) |
 
-### Ubuntu
 
-Prerequisites:
+## What they install (summary)
 
-- Run as root (use sudo). Internet access. Fresh or existing system is fine.
+- Ubuntu: base dev tools (git, git-lfs, build-essential, cmake, ninja, unzip/xz/7zip), optional VS Code, optional Docker Engine, Miniconda for the invoking user (conda-forge configured), optional CUDA toolkit + driver.
+- Windows: core tools via Chocolatey (git, 7zip, cmake, ninja, Visual Studio Build Tools), optional VS Code, Windows Terminal, Cmder, Docker Desktop, Miniconda, optional CUDA toolkit + driver.
 
-1. Optionally adjust configuration flags at the top of `scripts/provision-ubuntu.sh`:
+## Ubuntu: usage, profiles and CLI flags
 
-- INSTALL_VSCODE, INSTALL_DOCKER, INSTALL_CUDA, INSTALL_NVIDIA_DRIVER
-- CUDA_TOOLKIT_PKG (e.g., `cuda-toolkit-12-4` or `cuda-toolkit`)
+Run from the repository root. The script requires root to install system packages.
 
-1. Run the script:
-
+Basic run:
 
 ```bash
 sudo bash scripts/provision-ubuntu.sh
 ```
 
-Notes:
+Profiles
 
-- If Docker is enabled, the invoking user is added to the `docker` group. Log out/in (or run `newgrp docker`) for it to take effect.
-- If CUDA driver installation runs, a reboot is recommended.
+- `--profile=default`  (default) -> VS Code ON, Docker ON, CUDA OFF
+- `--profile=minimal`  -> VS Code ON, Docker OFF, CUDA OFF
+- `--profile=gpu`      -> VS Code ON, Docker ON, CUDA+Driver ON
 
-### Windows
+CLI flags (override profile defaults)
 
-Prerequisites:
+- `--install-vscode=true|false`
+- `--install-docker=true|false`
+- `--install-cuda=true|false`
+- `--install-nvidia-driver=true|false`
+- `--cuda-toolkit-pkg=cuda-toolkit-12-4` (or `cuda-toolkit`)
 
-- Open an elevated PowerShell (Run as Administrator). Internet access.
+Examples
 
-1. Optionally adjust the `$Cfg` object at the top of `scripts/provision-win.ps1` to toggle installs, and pin versions if needed.
+- Default profile (VS Code + Docker):
 
-1. From an elevated PowerShell in the repository root, run:
+```bash
+sudo bash scripts/provision-ubuntu.sh
+```
 
+- Minimal profile (skip Docker):
+
+```bash
+sudo bash scripts/provision-ubuntu.sh --profile=minimal
+```
+
+- GPU profile but explicitly disable Docker:
+
+```bash
+sudo bash scripts/provision-ubuntu.sh --profile=gpu --install-docker=false
+```
+
+What the script does (high level)
+
+- Detects the real (non-root) user who invoked sudo so Miniconda installs into their home.
+- Adds/normalizes vendor apt repositories (Docker, Microsoft Code, NVIDIA CUDA) in an idempotent way.
+- Installs base packages and tooling via apt.
+- Installs Miniconda into the invoking user's home and runs `conda init` for bash and zsh.
+
+Notes & gotchas
+
+- Must run as root (sudo). The script exits early if not run as root.
+- The script bundles logic to detect and resolve conflicting VS Code apt repo entries before running `apt update`.
+- Miniconda installer URL targets x86_64 by default; change the URL in the script if you need aarch64/ARM builds.
+- Docker: after install, log out/in or run `newgrp docker` to use Docker without sudo.
+- CUDA: if the NVIDIA driver is installed, a reboot is recommended.
+
+## Windows: usage and parameters
+
+Run from an elevated PowerShell (Admin). The script exposes a `param()` block so you can pass named parameters on the command line.
+
+Basic run (default profile):
 
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
+# from repo root in elevated PowerShell
 ./scripts/provision-win.ps1
 ```
 
-Notes:
+Profiles (use `-Profile <name>`) and parameters
 
-- If Docker Desktop is installed and you were added to `docker-users`, sign out/in once.
-- If NVIDIA driver was installed, a reboot may be required.
+- `-Profile default`  -> default toggles as declared in the script
+- `-Profile minimal`  -> skips Docker by default
+- `-Profile gpu`      -> enables CUDA + NVIDIA driver by default
 
-## Configuration flags (overview)
+Parameters (examples)
 
-Ubuntu (`provision-ubuntu.sh`):
+- `-InstallVSCode:$true/$false`
+- `-InstallDocker:$true/$false`
+- `-InstallWindowsTerminal:$true/$false`
+- `-InstallCmder:$true/$false`
+- `-InstallCUDA:$true/$false`
+- `-InstallNvidiaDriver:$true/$false`
+- Version pins (strings): `-CudaToolkitVersion`, `-NvidiaDriverVersion`, `-GitVersion`, `-VSCodeVersion`, `-CMakeVersion`, `-NinjaVersion`, `-VSBuildToolsVersion`, `-MinicondaVersion`, `-WindowsTerminalVersion`, `-CmderVersion`
 
-- INSTALL_VSCODE=true|false
-- INSTALL_DOCKER=true|false
-- INSTALL_CUDA=true|false
-- INSTALL_NVIDIA_DRIVER=true|false
-- CUDA_TOOLKIT_PKG="cuda-toolkit-12-4" (or empty for latest `cuda-toolkit`)
+Example: GPU profile but skip Docker and pin CUDA version
 
-Windows (`provision-win.ps1`, within `$Cfg`):
+```powershell
+./scripts/provision-win.ps1 -Profile gpu -InstallDocker:$false -CudaToolkitVersion 12.4.1
+```
 
-- InstallVSCode, InstallDocker, InstallWindowsTerminal, InstallCmder
-- InstallCUDA, InstallNvidiaDriver
-- Optional version pins: GitVersion, VSCodeVersion, CMakeVersion, NinjaVersion, VSBuildToolsVersion, MinicondaVersion, WindowsTerminalVersion, CmderVersion, CudaToolkitVersion, NvidiaDriverVersion
+What the script does (high level)
+
+- Installs Chocolatey if missing, then uses it to install packages. Visual Studio Build Tools are installed with package parameters to include MSVC/MSBuild components.
+- Installs Miniconda (choco package) and runs `conda init` for PowerShell and cmd.
+- Ensures ExecutionPolicy for the CurrentUser is set so PowerShell profiles load (required for conda init to be effective).
+
+Notes
+
+- Must run in an elevated PowerShell. The script will throw if not elevated.
+- If Docker Desktop is installed and your account was added to `docker-users`, sign out/in.
+- If NVIDIA driver is installed, reboot is recommended.
 
 ## Verification
 
-After the script completes, open a new terminal session and verify:
+After running either script, open a new shell and verify the main tools are available:
 
-Ubuntu:
+Ubuntu (new terminal):
 
 ```bash
 git --version
@@ -101,10 +157,10 @@ code --version        # if VS Code enabled
 docker --version      # if Docker enabled
 conda --version
 python -V
-nvcc --version        # if CUDA toolkit enabled
+nvcc --version        # if CUDA installed
 ```
 
-Windows (new PowerShell/Terminal tab):
+Windows (open a new elevated PowerShell or normal PowerShell after admin tasks complete):
 
 ```powershell
 git --version
@@ -112,26 +168,20 @@ code --version        # if VS Code enabled
 docker --version      # if Docker Desktop enabled
 conda --version
 python -V
-nvcc --version        # if CUDA toolkit enabled
+nvcc --version        # if CUDA installed
 ```
-
-## Docker on WSL2 (note)
-
-On Windows with WSL2 Ubuntu, prefer Docker Desktop integration rather than installing Docker Engine inside WSL. If you still enable Docker in WSL with this script, make sure the WSL kernel supports it and expect additional setup.
 
 ## Troubleshooting
 
-- Must run as admin/root: Ubuntu requires `sudo`; Windows requires an elevated PowerShell.
+- Run as admin/root: Ubuntu requires `sudo`; Windows requires an elevated PowerShell.
 - New shells required: Open a new terminal to pick up `conda init` changes and updated PATH.
 - Docker group (Ubuntu): If `docker` commands require sudo after install, log out/in or run `newgrp docker`.
-- NVIDIA driver/toolkit:
-  - Ubuntu: Ensure your GPU is supported on the selected CUDA toolkit; use the correct Ubuntu version repo. Reboot after driver install.
-  - Windows: If driver install was requested, reboot once before using CUDA.
+- VS Code apt repo conflicts: the Ubuntu script tries to detect and normalize duplicate Microsoft Code repo entries before `apt update` to avoid signed-by problems.
 - Corporate proxies: Configure system proxy and git proxy settings before running the scripts.
 
 ## Uninstall/rollback (brief)
 
-These scripts use the system package managers (apt/Chocolatey) and vendor installers. Use those tools to uninstall if needed. For Miniconda, you can remove the install directory and undo shell init lines in your shell profiles.
+These scripts use the system package managers (apt/Chocolatey) and vendor installers. Use those package managers to remove installed packages. To remove Miniconda, delete the installation path (e.g., `~/miniconda3`) and remove the `conda init` lines from the user's shell profile.
 
 ## License
 
