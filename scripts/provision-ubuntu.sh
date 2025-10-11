@@ -2,9 +2,10 @@
 set -euo pipefail
 
 # ===========================================
-# Provision Ubuntu for Dev + Miniconda (CLI, robust & idempotent)
+# Provision Ubuntu for Dev + Miniconda (CLI)
 # Profiles: default | minimal | gpu
 # Flags override profile defaults.
+# Adds *system Python* (python3 + venv + pip) BEFORE Miniconda.
 # ===========================================
 
 # ---------- Defaults ----------
@@ -15,8 +16,9 @@ INSTALL_DOCKER=true
 
 INSTALL_CUDA=false
 INSTALL_NVIDIA_DRIVER=false
+CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"    # e.g. "cuda-toolkit-12-4" or "cuda-toolkit"
 
-CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"   # e.g., "cuda-toolkit-12-4" or "cuda-toolkit"
+INSTALL_PYTHON=true                     # system Python (python3, python3-venv, python3-pip)
 
 # ---------- Helpers ----------
 log()  { echo -e "\033[1;32m[INFO]\033[0m $*"; }
@@ -30,8 +32,10 @@ need_root() {
   fi
 }
 
+# Bash-3.2 compatible lowercase
 parse_bool() {
-  case "${1,,}" in
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$v" in
     true|1|yes|y|on)  echo "true" ;;
     false|0|no|n|off) echo "false" ;;
     *) err "Invalid boolean value: '$1' (use true/false)"; exit 2 ;;
@@ -44,58 +48,42 @@ file_contains_repo() {
 }
 
 ensure_ms_keyring() {
-  # Ensure /etc/apt/keyrings/packages.microsoft.gpg exists.
+  # Ensure canonical MS keyring exists
   local canonical="/etc/apt/keyrings/packages.microsoft.gpg"
   install -d -m 0755 /etc/apt/keyrings
   if [[ -f "$canonical" ]]; then
     echo "$canonical"; return
   fi
-
-  # If the older path exists, reuse it by copying (no apt or gpg needed).
   local old="/usr/share/keyrings/microsoft.gpg"
   if [[ -f "$old" ]]; then
     cp -f "$old" "$canonical"
     chmod 0644 "$canonical"
     echo "$canonical"; return
   fi
-
-  # Fallback: dearmor fresh key (assumes gnupg exists on standard Ubuntu).
   if ! command -v gpg >/dev/null 2>&1; then
-    # best-effort; won't run apt update here to avoid signed-by conflicts
-    warn "gnupg not found; attempting to install minimal tools..."
     apt-get install -y --no-install-recommends gnupg ca-certificates curl || true
   fi
-  log "Creating Microsoft keyring at $canonical..."
   curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$canonical"
   chmod 0644 "$canonical"
   echo "$canonical"
 }
 
 disable_all_code_sources() {
-  # Disable ANY source (list/sources) that points at the Code repo, plus entries in /etc/apt/sources.list.
+  # Disable ANY Code repo entries to avoid signed-by conflicts
   local needle='packages\.microsoft\.com/(repos/)?code'
-  local f
-
-  # 1) comment out lines in the main sources.list
   if [[ -f /etc/apt/sources.list ]] && grep -Eq "$needle" /etc/apt/sources.list; then
     sed -i -E 's|^deb (.*packages\.microsoft\.com/(repos/)?code.*)$|# disabled duplicate: deb \1|' /etc/apt/sources.list || true
   fi
-
-  # 2) rename any conflicting .list/.sources files so apt ignores them
+  local f
   while IFS= read -r -d '' f; do
-    # Skip our canonical file if present; we will (re)create it later anyway
-    if [[ "$f" == "/etc/apt/sources.list.d/vscode.list" ]]; then
-      rm -f "$f" || true
-      continue
-    fi
+    [[ "$f" == "/etc/apt/sources.list.d/vscode.list" ]] && { rm -f "$f" || true; continue; }
     mv -f "$f" "${f}.disabled" || true
   done < <(grep -RslZ --include='*.list' --include='*.sources' -E "$needle" /etc/apt/sources.list.d 2>/dev/null || true)
 }
 
 install_code_repo_canonical() {
-  # After disabling duplicates, create a single canonical .list entry using our canonical keyring.
-  local key_path="$(ensure_ms_keyring)"
-  local arch="$(dpkg --print-architecture)"
+  local key_path; key_path="$(ensure_ms_keyring)"
+  local arch; arch="$(dpkg --print-architecture)"
   echo "deb [arch=${arch} signed-by=${key_path}] https://packages.microsoft.com/repos/code stable main" \
     > /etc/apt/sources.list.d/vscode.list
   chmod 0644 /etc/apt/sources.list.d/vscode.list
@@ -103,27 +91,18 @@ install_code_repo_canonical() {
 }
 
 fix_vscode_repo_conflicts() {
-  # Always resolve Code repo conflicts BEFORE any apt update.
-  local have_any=false
   local needle='packages\.microsoft\.com/(repos/)?code'
-
-  if grep -Eq "$needle" /etc/apt/sources.list 2>/dev/null; then
-    have_any=true
-  fi
-  if grep -Rqs --include='*.list' --include='*.sources' -E "$needle" /etc/apt/sources.list.d 2>/dev/null; then
-    have_any=true
-  fi
-
+  local have_any=false
+  grep -Eq "$needle" /etc/apt/sources.list 2>/dev/null && have_any=true || true
+  grep -Rqs --include='*.list' --include='*.sources' -E "$needle" /etc/apt/sources.list.d 2>/dev/null && have_any=true || true
   if [[ "$have_any" == "true" ]]; then
-    log "Detected existing VS Code repo entries — normalizing..."
+    log "Detected existing VS Code sources — normalizing..."
     disable_all_code_sources
   fi
-
   if [[ "${INSTALL_VSCODE}" == "true" ]]; then
     install_code_repo_canonical
   else
-    # If user does not want VS Code installed, keep repo disabled to avoid future conflicts.
-    log "VS Code installation disabled; any existing Code repos were disabled."
+    log "VS Code install disabled; any Code sources were disabled."
   fi
 }
 
@@ -136,6 +115,7 @@ for arg in "$@"; do
     --install-cuda=*)            INSTALL_CUDA=$(parse_bool "${arg#*=}");;
     --install-nvidia-driver=*)   INSTALL_NVIDIA_DRIVER=$(parse_bool "${arg#*=}");;
     --cuda-toolkit-pkg=*)        CUDA_TOOLKIT_PKG="${arg#*=}";;
+    --install-python=*)          INSTALL_PYTHON=$(parse_bool "${arg#*=}");;
     -h|--help)
       cat <<'USAGE'
 Usage: sudo bash provision-ubuntu.sh [flags]
@@ -150,17 +130,11 @@ Flags (override profile defaults):
   --install-docker=true|false
   --install-cuda=true|false
   --install-nvidia-driver=true|false
-  --cuda-toolkit-pkg=cuda-toolkit-12-4   # or "cuda-toolkit"
-
-Examples:
-  sudo bash provision-ubuntu.sh
-  sudo bash provision-ubuntu.sh --profile=minimal
-  sudo bash provision-ubuntu.sh --profile=gpu
-  sudo bash provision-ubuntu.sh --profile=gpu --install-docker=false
+  --cuda-toolkit-pkg=cuda-toolkit-12-4
+  --install-python=true|false           # install python3 + venv + pip (default: true)
 USAGE
       exit 0;;
-    *)
-      err "Unknown flag: $arg"; exit 2;;
+    *) err "Unknown flag: $arg"; exit 2;;
   esac
 done
 
@@ -174,13 +148,12 @@ case "$PROFILE" in
     INSTALL_NVIDIA_DRIVER=true
     ;;
   default) ;;
-  *)
-    err "Invalid --profile value: $PROFILE (use default|minimal|gpu)"; exit 2;;
+  *) err "Invalid --profile value: $PROFILE (use default|minimal|gpu)"; exit 2;;
 esac
 
 need_root
 
-# ---------- Real user (for Miniconda) ----------
+# ---------- Real user (for Miniconda later) ----------
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
 if [[ -z "$REAL_HOME" || ! -d "$REAL_HOME" ]]; then
@@ -189,7 +162,7 @@ if [[ -z "$REAL_HOME" || ! -d "$REAL_HOME" ]]; then
 fi
 
 log "Profile: $PROFILE"
-log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_NVIDIA_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG"
+log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_NVIDIA_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG Python:$INSTALL_PYTHON"
 log "Installing for user: $REAL_USER (home: $REAL_HOME)"
 
 # ---------- PRE-FIX: VS Code repo conflicts BEFORE any apt update ----------
@@ -205,6 +178,14 @@ apt-get install -y --no-install-recommends \
   cmake ninja-build \
   unzip xz-utils p7zip-full
 git lfs install || true
+
+# ---------- System Python (python3 + venv + pip) ----------
+if [[ "$INSTALL_PYTHON" == "true" ]]; then
+  log "Installing system Python (python3, venv, pip)..."
+  apt-get install -y python3 python3-venv python3-pip python3-dev
+  # Provide `python` alias on newer Ubuntu, if available (optional):
+  apt-get install -y python-is-python3 || true
+fi
 
 # ---------- VS Code install ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
@@ -238,7 +219,6 @@ log "Installing Miniconda for user: $REAL_USER"
 CONDA_DIR="${REAL_HOME}/miniconda3"
 if [[ ! -d "$CONDA_DIR" ]]; then
   tmp_installer="/tmp/miniconda.sh"
-  # x86_64 installer; change URL for aarch64 if needed
   curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o "$tmp_installer"
   chown "$REAL_USER":"$REAL_USER" "$tmp_installer"
   sudo -u "$REAL_USER" bash "$tmp_installer" -b -p "$CONDA_DIR"
@@ -273,7 +253,7 @@ if [[ "$INSTALL_CUDA" == "true" ]]; then
   fi
 
   log "Setting up NVIDIA CUDA apt repo and installing ${CUDA_TOOLKIT_PKG} ..."
-  ver_id="$(. /etc/os-release && echo "$VERSION_ID")"          # e.g., 22.04 -> 2204, 24.04 -> 2404
+  ver_id="$(. /etc/os-release && echo "$VERSION_ID")"      # e.g., 22.04 -> 2204, 24.04 -> 2404
   ver_nodot="${ver_id//./}"
   cuda_keyring="cuda-keyring_1.1-1_all.deb"
 
@@ -310,6 +290,7 @@ fi
 log "Provisioning complete."
 echo "• Miniconda for ${REAL_USER}: ${CONDA_DIR}"
 echo "• conda-forge enabled (strict), conda init done for bash$(command -v zsh >/dev/null 2>&1 && echo ', zsh')."
-[[ "$INSTALL_VSCODE" == "true" ]] && echo "• VS Code installed (code)."
-[[ "$INSTALL_DOCKER" == "true" ]] && echo "• Docker Engine installed. Log out/in (or 'newgrp docker') to use without sudo."
-[[ "$INSTALL_CUDA" == "true"  ]] && echo "• CUDA toolkit installed. Reboot after driver install."
+[[ "$INSTALL_PYTHON"  == "true" ]] && echo "• System Python installed: python3 + venv + pip (use: 'python3 -m venv .venv')."
+[[ "$INSTALL_VSCODE"  == "true" ]] && echo "• VS Code installed (code)."
+[[ "$INSTALL_DOCKER"  == "true" ]] && echo "• Docker Engine installed. Log out/in (or 'newgrp docker') to use without sudo."
+[[ "$INSTALL_CUDA"    == "true" ]] && echo "• CUDA toolkit installed. Reboot after driver install."
