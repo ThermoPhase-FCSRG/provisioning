@@ -295,9 +295,12 @@ if ($InstallCUDA) {
 & git config --global init.defaultBranch main
 & git lfs install | Out-Null
 
+# ----- Final status -----
+$minicondaMethod = if ($MinicondaUseDirectInstaller) { 'direct' } else { 'Chocolatey' }
+
 Write-Host "Provisioning complete (profile: $Profile)."
 if ($InstallPython)        { Write-Host "System Python installed (with venv & pip). Use 'py -3 -m venv .venv' or 'python -m venv .venv'." }
-Write-Host "Miniconda installed (via $([bool]$MinicondaUseDirectInstaller ? 'direct' : 'Chocolatey')). conda-forge enabled with strict priority."
+Write-Host "Miniconda installed (via $minicondaMethod). conda-forge enabled with strict priority."
 if ($CondaSelfUpdate)      { Write-Host "Base 'conda' self-update attempted." }
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
 Write-Host "ExecutionPolicy set to RemoteSigned (CurrentUser) for Windows PowerShell$(if (Get-Command pwsh -ErrorAction SilentlyContinue) { ', and PowerShell 7' } else { '' })."
