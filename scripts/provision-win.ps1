@@ -1,5 +1,5 @@
 <# 
-  Minimal Windows provisioning for Dev + Python via Miniconda (CLI-configurable + profiles)
+  Windows provisioning for Dev + Python via Miniconda (CLI-configurable + profiles)
   - Installs: Git, (optional) VS Code, CMake, Ninja, VS 2022 Build Tools (MSVC), 7zip,
               (optional) Docker Desktop, (optional) Windows Terminal, (optional) Cmder
   - Installs Miniconda and configures conda-forge (strict). No envs created.
@@ -8,9 +8,12 @@
 
   Examples:
     .\provision-win.ps1                               # default profile
-    .\provision-win.ps1 -Profile minimal              # skips Docker
-    .\provision-win.ps1 -Profile gpu                  # enables CUDA + NVIDIA driver
+    .\provision-win.ps1 -Profile minimal              # skips Docker by default
+    .\provision-win.ps1 -Profile gpu                  # enables CUDA + NVIDIA driver by default
     .\provision-win.ps1 -Profile gpu -InstallDocker:$false  # explicit flag overrides profile
+
+    # Version pins example:
+    .\provision-win.ps1 -CudaToolkitVersion 12.4.1 -GitVersion 2.47.0 -CMakeVersion 3.29.6
 #>
 
 [CmdletBinding()]
@@ -46,11 +49,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ----- Apply profile defaults (only if the user did NOT set the flag) -----
+# ----- Apply profile defaults (only if user did NOT set the flag) -----
 switch ($Profile) {
   'minimal' {
     if (-not $PSBoundParameters.ContainsKey('InstallDocker'))      { $InstallDocker = $false }
-    # Everything else same as default
   }
   'gpu' {
     if (-not $PSBoundParameters.ContainsKey('InstallCUDA'))        { $InstallCUDA = $true }
@@ -115,7 +117,6 @@ $vsParamList = @(
 $vsParams = '"' + ($vsParamList -join ' ') + '"'
 Choco-Ensure -Pkg visualstudio2022buildtools -Version $VSBuildToolsVersion -PackageParameters $vsParams
 
-if ($InstallVSCode)          { Choco-Ensure -Pkg microsoft-edge-webview2-runtime }  # sometimes needed by extensions
 if ($InstallVSCode)          { Choco-Ensure -Pkg vscode -Version $VSCodeVersion }
 if ($InstallWindowsTerminal) { Choco-Ensure -Pkg microsoft-windows-terminal -Version $WindowsTerminalVersion }
 if ($InstallCmder)           { Choco-Ensure -Pkg $CmderPackageId -Version $CmderVersion }
