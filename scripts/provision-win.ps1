@@ -1,43 +1,63 @@
 <# 
-  Minimal Windows provisioning for Dev + Python via Miniconda
+  Minimal Windows provisioning for Dev + Python via Miniconda (CLI-configurable + profiles)
   - Installs: Git, (optional) VS Code, CMake, Ninja, VS 2022 Build Tools (MSVC), 7zip,
               (optional) Docker Desktop, (optional) Windows Terminal, (optional) Cmder
   - Installs Miniconda and configures conda-forge (strict). No envs created.
-  - Optional CUDA prep: installs NVIDIA driver (optional) and CUDA Toolkit.
+  - Optional CUDA prep: NVIDIA driver (optional) and CUDA Toolkit.
   - Ensures ExecutionPolicy (CurrentUser -> RemoteSigned) so PowerShell profile loads (conda init works).
 
-  Re-runnable (idempotent-ish). Keep it simple & clean.
+  Examples:
+    .\provision-win.ps1                               # default profile
+    .\provision-win.ps1 -Profile minimal              # skips Docker
+    .\provision-win.ps1 -Profile gpu                  # enables CUDA + NVIDIA driver
+    .\provision-win.ps1 -Profile gpu -InstallDocker:$false  # explicit flag overrides profile
 #>
+
+[CmdletBinding()]
+param(
+  # ===== Profiles =====
+  [ValidateSet('default','minimal','gpu')]
+  [string] $Profile = 'default',
+
+  # ===== Tool toggles ===== (explicit flags override profile defaults)
+  [bool] $InstallVSCode            = $true,
+  [bool] $InstallWindowsTerminal   = $true,
+  [bool] $InstallCmder             = $true,
+  [string] $CmderPackageId         = "cmder",   # "cmder" or "cmdermini"
+  [bool] $InstallDocker            = $true,
+
+  # ===== CUDA toggles =====
+  [bool] $InstallCUDA              = $false,
+  [bool] $InstallNvidiaDriver      = $false,
+
+  # ===== Version pins (leave null for latest) =====
+  [string] $CudaToolkitVersion     = $null,
+  [string] $NvidiaDriverVersion    = $null,
+  [string] $GitVersion             = $null,
+  [string] $VSCodeVersion          = $null,
+  [string] $CMakeVersion           = $null,
+  [string] $NinjaVersion           = $null,
+  [string] $VSBuildToolsVersion    = $null,
+  [string] $MinicondaVersion       = $null,
+  [string] $WindowsTerminalVersion = $null,
+  [string] $CmderVersion           = $null
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# -------------------- CONFIG --------------------
-$Cfg = [pscustomobject]@{
-  # Tooling toggles
-  InstallVSCode            = $true
-  InstallDocker            = $true
-  InstallWindowsTerminal   = $true
-  InstallCmder             = $true          # Cmder (full). Use "cmdermini" in CmderPackageId for lighter.
-  CmderPackageId           = "cmder"        # "cmder" or "cmdermini"
-
-  # CUDA prep (PyTorch + CUDA)
-  InstallCUDA              = $false         # true => install CUDA toolkit; driver optional below
-  InstallNvidiaDriver      = $false         # true => install NVIDIA display driver via Chocolatey
-  CudaToolkitVersion       = $null          # e.g. "12.4.1" or $null for latest
-  NvidiaDriverVersion      = $null          # e.g. "560.94" or $null for latest
-
-  # Optional pins (leave $null for latest)
-  GitVersion               = $null
-  VSCodeVersion            = $null
-  CMakeVersion             = $null
-  NinjaVersion             = $null
-  VSBuildToolsVersion      = $null
-  MinicondaVersion         = $null
-  WindowsTerminalVersion   = $null
-  CmderVersion             = $null
+# ----- Apply profile defaults (only if the user did NOT set the flag) -----
+switch ($Profile) {
+  'minimal' {
+    if (-not $PSBoundParameters.ContainsKey('InstallDocker'))      { $InstallDocker = $false }
+    # Everything else same as default
+  }
+  'gpu' {
+    if (-not $PSBoundParameters.ContainsKey('InstallCUDA'))        { $InstallCUDA = $true }
+    if (-not $PSBoundParameters.ContainsKey('InstallNvidiaDriver')){ $InstallNvidiaDriver = $true }
+  }
+  default { } # keep declared defaults
 }
-# ------------------------------------------------
 
 function Ensure-Admin {
   $id=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -78,10 +98,10 @@ function Enable-LongPaths {
 Enable-LongPaths
 
 Write-Host "Installing core development tools..."
-Choco-Ensure -Pkg git -Version $Cfg.GitVersion
+Choco-Ensure -Pkg git   -Version $GitVersion
 Choco-Ensure -Pkg 7zip
-Choco-Ensure -Pkg cmake -Version $Cfg.CMakeVersion
-Choco-Ensure -Pkg ninja -Version $Cfg.NinjaVersion
+Choco-Ensure -Pkg cmake -Version $CMakeVersion
+Choco-Ensure -Pkg ninja -Version $NinjaVersion
 
 # Visual Studio 2022 Build Tools (MSVC + MSBuild + CMake integration + Win11 SDK)
 $vsParamList = @(
@@ -93,13 +113,14 @@ $vsParamList = @(
   "--quiet", "--norestart", "--nocache"
 )
 $vsParams = '"' + ($vsParamList -join ' ') + '"'
-Choco-Ensure -Pkg visualstudio2022buildtools -Version $Cfg.VSBuildToolsVersion -PackageParameters $vsParams
+Choco-Ensure -Pkg visualstudio2022buildtools -Version $VSBuildToolsVersion -PackageParameters $vsParams
 
-if ($Cfg.InstallVSCode)          { Choco-Ensure -Pkg vscode -Version $Cfg.VSCodeVersion }
-if ($Cfg.InstallWindowsTerminal) { Choco-Ensure -Pkg microsoft-windows-terminal -Version $Cfg.WindowsTerminalVersion }
-if ($Cfg.InstallCmder)           { Choco-Ensure -Pkg $Cfg.CmderPackageId -Version $Cfg.CmderVersion }
+if ($InstallVSCode)          { Choco-Ensure -Pkg microsoft-edge-webview2-runtime }  # sometimes needed by extensions
+if ($InstallVSCode)          { Choco-Ensure -Pkg vscode -Version $VSCodeVersion }
+if ($InstallWindowsTerminal) { Choco-Ensure -Pkg microsoft-windows-terminal -Version $WindowsTerminalVersion }
+if ($InstallCmder)           { Choco-Ensure -Pkg $CmderPackageId -Version $CmderVersion }
 
-if ($Cfg.InstallDocker) {
+if ($InstallDocker) {
   Choco-Ensure -Pkg docker-desktop
   try {
     $user = "$env:USERDOMAIN\$env:USERNAME"
@@ -111,9 +132,9 @@ if ($Cfg.InstallDocker) {
 }
 
 Write-Host "Installing Miniconda..."
-Choco-Ensure -Pkg miniconda3 -Version $Cfg.MinicondaVersion
+Choco-Ensure -Pkg miniconda3 -Version $MinicondaVersion
 
-# Locate conda.bat
+# Locate conda.bat (Chocolatey or user installs)
 $condaBatCandidates = @(
   "$env:UserProfile\miniconda3\condabin\conda.bat",
   "$env:ProgramData\miniconda3\condabin\conda.bat",
@@ -145,7 +166,7 @@ try {
   Write-Warning "Could not set ExecutionPolicy for Windows PowerShell CurrentUser: $_"
 }
 
-# Also set for PowerShell 7 (if installed). Separate policy hive. (PS 5.1 compatible)
+# Also set for PowerShell 7 (if installed) — PS 5.1 compatible
 try {
   $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
   if ($pwshCmd) {
@@ -161,17 +182,17 @@ try {
 }
 
 # CUDA prep (optional)
-if ($Cfg.InstallCUDA) {
+if ($InstallCUDA) {
   Write-Host "CUDA prep enabled."
-  if ($Cfg.InstallNvidiaDriver) {
-    Choco-Ensure -Pkg nvidia-display-driver -Version $Cfg.NvidiaDriverVersion
+  if ($InstallNvidiaDriver) {
+    Choco-Ensure -Pkg nvidia-display-driver -Version $NvidiaDriverVersion
     Write-Host "NVIDIA display driver installed (or already present). A reboot may be required."
   } else {
     Write-Host "Skipping NVIDIA driver install (InstallNvidiaDriver=false). Ensure a compatible driver is already installed."
   }
 
   # CUDA Toolkit (nvcc/headers; PyTorch wheels bundle CUDA runtime)
-  Choco-Ensure -Pkg cuda -Version $Cfg.CudaToolkitVersion
+  Choco-Ensure -Pkg cuda -Version $CudaToolkitVersion
 
   # Set CUDA_PATH for convenience (Machine scope)
   $cudaRoot = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
@@ -191,11 +212,11 @@ if ($Cfg.InstallCUDA) {
 & git config --global core.autocrlf input
 & git config --global init.defaultBranch main
 
-Write-Host "Provisioning complete."
+Write-Host "Provisioning complete (profile: $Profile)."
 Write-Host "Miniconda installed. conda-forge enabled with strict priority."
 Write-Host "Conda initialized for new PowerShell and cmd sessions."
 Write-Host "ExecutionPolicy set to RemoteSigned (CurrentUser) for Windows PowerShell$(if (Get-Command pwsh -ErrorAction SilentlyContinue) { ', and PowerShell 7' } else { '' })."
-if ($Cfg.InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
-if ($Cfg.InstallCmder)          { Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu." }
-if ($Cfg.InstallCUDA)           { Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA." }
-if ($Cfg.InstallDocker)         { Write-Host "Docker Desktop installed. Sign out/in once if 'docker-users' membership is new." }
+if ($InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or already present)." }
+if ($InstallCmder)          { Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu." }
+if ($InstallCUDA)           { Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA." }
+if ($InstallDocker)         { Write-Host "Docker Desktop installed. Sign out/in once if 'docker-users' membership is new." }
