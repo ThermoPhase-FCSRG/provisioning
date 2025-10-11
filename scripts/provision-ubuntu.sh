@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===========================================
-# Provision Ubuntu for Dev + Miniconda (CLI)
+# Provision Ubuntu for Dev + Miniconda (CLI, robust & idempotent)
 # Profiles: default | minimal | gpu
 # Flags override profile defaults.
 # ===========================================
@@ -41,6 +41,61 @@ parse_bool() {
 file_contains_repo() {
   local path="$1" needle="$2"
   [[ -f "$path" ]] && grep -qE "$needle" "$path"
+}
+
+ensure_ms_keyring() {
+  # Ensure a dearmored Microsoft key exists at the canonical location.
+  local key="/etc/apt/keyrings/packages.microsoft.gpg"
+  install -d -m 0755 /etc/apt/keyrings
+  if [[ ! -f "$key" ]]; then
+    if ! command -v gpg >/dev/null 2>&1; then
+      # Try best-effort install; may fail if sources are broken, but most systems already have gpg.
+      apt-get update -y || true
+      apt-get install -y gnupg curl ca-certificates || true
+    fi
+    log "Creating Microsoft keyring at $key..."
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$key"
+    chmod 0644 "$key"
+  fi
+  echo "$key"
+}
+
+fix_vscode_repo_conflicts() {
+  # Standardize any Code repo definitions before the first apt update.
+  # Canonical: /etc/apt/sources.list.d/vscode.list using /etc/apt/keyrings/packages.microsoft.gpg
+  local needle='packages\.microsoft\.com/repos/code'
+  local canonical_list='/etc/apt/sources.list.d/vscode.list'
+  local key_path
+  key_path="$(ensure_ms_keyring)"
+
+  # Gather all files containing the Code repo
+  local matches=()
+  while IFS= read -r -d '' f; do matches+=("$f"); done < <(
+    grep -RslZ --include='*.list' --include='*.sources' -E "$needle" \
+      /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true
+  )
+
+  if (( ${#matches[@]} == 0 )); then
+    # Fresh add
+    local arch="$(dpkg --print-architecture)"
+    echo "deb [arch=${arch} signed-by=${key_path}] https://packages.microsoft.com/repos/code stable main" \
+      > "$canonical_list"
+    log "Added Code repo at $canonical_list"
+    return
+  fi
+
+  # Write/overwrite canonical file with our standardized line
+  local arch="$(dpkg --print-architecture)"
+  echo "deb [arch=${arch} signed-by=${key_path}] https://packages.microsoft.com/repos/code stable main" \
+    > "$canonical_list"
+  log "Rewrote Code repo to $canonical_list (signed-by=${key_path})"
+
+  # Comment out duplicates everywhere else (including conflicting signed-by)
+  for f in "${matches[@]}"; do
+    [[ "$f" == "$canonical_list" ]] && continue
+    # Comment every Code repo line to avoid conflicts
+    sed -i -E 's|^deb (.*packages\.microsoft\.com/repos/code.*)$|# disabled duplicate: deb \1|' "$f" || true
+  done
 }
 
 # ---------- Parse CLI ----------
@@ -108,6 +163,11 @@ log "Profile: $PROFILE"
 log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_NVIDIA_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG"
 log "Installing for user: $REAL_USER (home: $REAL_HOME)"
 
+# ---------- PRE-FIX: VS Code repo conflicts BEFORE first apt update ----------
+if [[ "$INSTALL_VSCODE" == "true" ]]; then
+  fix_vscode_repo_conflicts
+fi
+
 # ---------- Base packages ----------
 export DEBIAN_FRONTEND=noninteractive
 log "Updating apt and installing base packages..."
@@ -119,60 +179,8 @@ apt-get install -y --no-install-recommends \
   unzip xz-utils p7zip-full
 git lfs install || true
 
-# ---------- VS Code repo (idempotent & conflict-safe) ----------
+# ---------- VS Code install (repo now standardized) ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
-  log "Ensuring VS Code repo..."
-  # Look for any existing entries pointing to the Code repo
-  CODE_NEEDLE='https?://packages\.microsoft\.com/repos/code'
-  existing_files=()
-  while IFS= read -r -d '' f; do existing_files+=("$f"); done < <(grep -RslZ --include='*.list' --include='*.sources' -E "$CODE_NEEDLE" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true)
-
-  if (( ${#existing_files[@]} > 0 )); then
-    # Use the first existing source as the canonical one
-    canon="${existing_files[0]}"
-    log "Found existing Code repo: $canon"
-
-    # Extract signed-by= path if present
-    signed_by="$(grep -Eo 'signed-by=[^ ]+' "$canon" | head -n1 | cut -d= -f2 || true)"
-    if [[ -n "$signed_by" ]]; then
-      # Make sure that key exists there
-      install -d -m 0755 "$(dirname "$signed_by")"
-      if [[ ! -f "$signed_by" ]]; then
-        log "Creating keyring at $signed_by (dearmoring Microsoft key)..."
-        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$signed_by"
-        chmod 0644 "$signed_by"
-      fi
-    else
-      # No signed-by in existing file; add one safely by rewriting canonical file.
-      # Prefer /etc/apt/keyrings path.
-      key="/etc/apt/keyrings/packages.microsoft.gpg"
-      install -d -m 0755 /etc/apt/keyrings
-      if [[ ! -f "$key" ]]; then
-        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$key"
-        chmod 0644 "$key"
-      fi
-      arch="$(dpkg --print-architecture)"
-      echo "deb [arch=${arch} signed-by=${key}] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
-      log "Rewrote Code source to /etc/apt/sources.list.d/vscode.list with signed-by=${key}"
-      # Comment any other duplicates to avoid conflicts
-      for f in "${existing_files[@]}"; do
-        [[ "$f" == "/etc/apt/sources.list.d/vscode.list" ]] && continue
-        sed -i -E 's|^deb |# disabled duplicate: deb |' "$f" || true
-      done
-    fi
-  else
-    # Fresh add (no existing sources)
-    install -d -m 0755 /etc/apt/keyrings
-    key="/etc/apt/keyrings/packages.microsoft.gpg"
-    if [[ ! -f "$key" ]]; then
-      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o "$key"
-      chmod 0644 "$key"
-    fi
-    arch="$(dpkg --print-architecture)"
-    echo "deb [arch=${arch} signed-by=${key}] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
-    log "Added Code repo at /etc/apt/sources.list.d/vscode.list"
-  fi
-
   apt-get update -y
   apt-get install -y code
 fi
@@ -238,8 +246,8 @@ if [[ "$INSTALL_CUDA" == "true" ]]; then
   fi
 
   log "Setting up NVIDIA CUDA apt repo and installing ${CUDA_TOOLKIT_PKG} ..."
-  ver_id="$(. /etc/os-release && echo "$VERSION_ID")"          # e.g., 22.04
-  ver_nodot="${ver_id//./}"                                   # e.g., 2204
+  ver_id="$(. /etc/os-release && echo "$VERSION_ID")"          # e.g., 22.04 -> 2204, 24.04 -> 2404
+  ver_nodot="${ver_id//./}"
   cuda_keyring="cuda-keyring_1.1-1_all.deb"
 
   if ! dpkg -l | grep -q cuda-keyring; then
