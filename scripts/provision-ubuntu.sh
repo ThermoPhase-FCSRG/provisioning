@@ -222,26 +222,40 @@ fi
 install_miniconda_user() {
   local u="$1" h="$2"
   local prefix="$h/miniconda3"
-  log "Installing Miniconda for user: $u"
-  if [ ! -d "$prefix" ]; then
-    local url arch installer
-    arch="$(uname -m)"
-    case "$arch" in
-      x86_64|amd64) installer="Miniconda3-latest-Linux-x86_64.sh" ;;
-      aarch64|arm64) installer="Miniconda3-latest-Linux-aarch64.sh" ;;
-      *) err "Unsupported arch for Miniconda: $arch"; return 1 ;;
-    esac
-    url="https://repo.anaconda.com/miniconda/$installer"
-    tmp="/tmp/$installer"
-    curl -fsSL "$url" -o "$tmp"
-    chown "$u":"$u" "$tmp"
-    sudo -H -u "$u" bash "$tmp" -b -p "$prefix"
-    rm -f "$tmp"
+
+  # Detect an existing conda installation (any common prefix) before downloading
+  local existing_conda=""
+  for _p in "$prefix/bin/conda" \
+            "$h/miniforge3/bin/conda" \
+            "$h/anaconda3/bin/conda" \
+            "/opt/conda/bin/conda"; do
+    [ -x "$_p" ] && { existing_conda="$_p"; break; }
+  done
+
+  if [ -n "$existing_conda" ]; then
+    log "Conda already found at $existing_conda — skipping Miniconda download/install."
   else
-    log "Miniconda already present at $prefix"
+    log "Installing Miniconda for user: $u"
+    if [ ! -d "$prefix" ]; then
+      local url arch installer
+      arch="$(uname -m)"
+      case "$arch" in
+        x86_64|amd64) installer="Miniconda3-latest-Linux-x86_64.sh" ;;
+        aarch64|arm64) installer="Miniconda3-latest-Linux-aarch64.sh" ;;
+        *) err "Unsupported arch for Miniconda: $arch"; return 1 ;;
+      esac
+      url="https://repo.anaconda.com/miniconda/$installer"
+      tmp="/tmp/$installer"
+      curl -fsSL "$url" -o "$tmp"
+      chown "$u":"$u" "$tmp"
+      sudo -H -u "$u" bash "$tmp" -b -p "$prefix"
+      rm -f "$tmp"
+    else
+      log "Miniconda already present at $prefix"
+    fi
   fi
 
-  local conda_bin="$prefix/bin/conda"
+  local conda_bin="${existing_conda:-$prefix/bin/conda}"
   if [ ! -x "$conda_bin" ]; then
     err "Conda binary not found at $conda_bin"
     return 1

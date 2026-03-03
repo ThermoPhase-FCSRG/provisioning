@@ -229,7 +229,21 @@ fi
 # ---------- 6) Miniforge (Conda, conda-forge strict, init shells) ----------
 if [[ "$INSTALL_MINIFORGE" == "true" ]]; then
   log "Installing Miniforge at: $MINIFORGE_PREFIX"
-  if [[ ! -d "$MINIFORGE_PREFIX" ]]; then
+
+  # Detect an existing conda installation (any common prefix or PATH) before downloading
+  CONDA_BIN=""
+  for _p in "$MINIFORGE_PREFIX/bin/conda" \
+            "$HOME/miniconda3/bin/conda" \
+            "$HOME/anaconda3/bin/conda" \
+            "/opt/homebrew/Caskroom/miniconda/base/bin/conda" \
+            "/opt/conda/bin/conda"; do
+    [[ -x "$_p" ]] && { CONDA_BIN="$_p"; break; }
+  done
+  [[ -z "$CONDA_BIN" ]] && CONDA_BIN="$(command -v conda 2>/dev/null || true)"
+
+  if [[ -n "$CONDA_BIN" ]]; then
+    log "Conda already found at $CONDA_BIN — skipping Miniforge download/install."
+  elif [[ ! -d "$MINIFORGE_PREFIX" ]]; then
     tmp_inst="/tmp/miniforge.sh"
     if is_arm; then
       url="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh"
@@ -242,8 +256,8 @@ if [[ "$INSTALL_MINIFORGE" == "true" ]]; then
   else
     log "Miniforge already present."
   fi
+  [[ -z "$CONDA_BIN" ]] && CONDA_BIN="$MINIFORGE_PREFIX/bin/conda"
 
-  CONDA_BIN="$MINIFORGE_PREFIX/bin/conda"
   if [[ ! -x "$CONDA_BIN" ]]; then
     err "Conda binary not found at $CONDA_BIN"; exit 1
   fi

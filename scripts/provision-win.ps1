@@ -202,7 +202,27 @@ function Install-Miniconda-Direct {
 }
 
 Write-Host "Installing Miniconda..."
-if ($MinicondaUseDirectInstaller) {
+# Detect an existing conda installation before downloading
+$existingConda = $null
+$condaCandidates = @(
+  (Join-Path $MinicondaInstallDir 'condabin\conda.bat'),
+  "$env:UserProfile\miniforge3\condabin\conda.bat",
+  "$env:UserProfile\miniconda3\condabin\conda.bat",
+  "$env:UserProfile\anaconda3\condabin\conda.bat",
+  "$env:ProgramData\miniforge3\condabin\conda.bat",
+  "$env:ProgramData\miniconda3\condabin\conda.bat",
+  "C:\tools\miniconda3\condabin\conda.bat",
+  "C:\tools\miniforge3\condabin\conda.bat"
+)
+foreach ($c in $condaCandidates) { if (Test-Path $c) { $existingConda = $c; break } }
+if (-not $existingConda) {
+  $onPath = Get-Command conda -ErrorAction SilentlyContinue
+  if ($onPath) { $existingConda = $onPath.Source }
+}
+
+if ($existingConda) {
+  Write-Host "Conda already found at $existingConda — skipping Miniconda download/install."
+} elseif ($MinicondaUseDirectInstaller) {
   if ($MinicondaInstallDir -match '\s') {
     throw "MinicondaInstallDir contains spaces. NSIS '/D=' cannot be quoted reliably. Use a path without spaces (e.g., C:\tools\miniconda3)."
   }
@@ -211,14 +231,18 @@ if ($MinicondaUseDirectInstaller) {
   Choco-Ensure -Pkg miniconda3 -Version $MinicondaVersion
 }
 
-# Locate conda.bat (include the chosen install dir first)
+# Locate conda.bat (use already-found path, then fall back to candidate list)
 $condaBatCandidates = @(
   (Join-Path $MinicondaInstallDir 'condabin\conda.bat'),
   "$env:UserProfile\miniconda3\condabin\conda.bat",
   "$env:ProgramData\miniconda3\condabin\conda.bat",
   "C:\tools\miniconda3\condabin\conda.bat"
 )
-$condaBat = $condaBatCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$condaBat = if ($existingConda -and (Test-Path $existingConda)) {
+  $existingConda
+} else {
+  $condaBatCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
 if (-not $condaBat) { throw "Could not find conda.bat (Miniconda). Checked: $($condaBatCandidates -join ', ')" }
 
 # Optional: keep base conda itself fresh
