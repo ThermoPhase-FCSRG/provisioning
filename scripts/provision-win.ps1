@@ -57,7 +57,8 @@ param(
   [string] $VSBuildToolsVersion    = $null,
   [string] $MinicondaVersion       = $null,    # only used when MinicondaUseDirectInstaller:$false
   [string] $WindowsTerminalVersion = $null,
-  [string] $CmderVersion           = $null
+  [string] $CmderVersion           = $null,
+  [string] $PixiVersion            = $null     # e.g. "0.44.0"; null resolves latest from GitHub API
 )
 
 Set-StrictMode -Version Latest
@@ -321,8 +322,78 @@ if ($InstallCUDA) {
 & git lfs install | Out-Null
 
 # ---- pixi ----
+# Install pixi by downloading the versioned binary directly from GitHub Releases and verifying
+# its SHA-256 checksum before execution (avoids piping a remote script through Invoke-Expression).
+function Install-Pixi {
+  param([string]$Version = $null)
+
+  $dest    = "$env:USERPROFILE\.pixi\bin"
+  $pixiBin = Join-Path $dest 'pixi.exe'
+
+  if (Test-Path $pixiBin) {
+    Write-Host "pixi already present at $pixiBin — skipping install."
+    return
+  }
+
+  # Resolve version: use the provided pin or query the GitHub API for the latest release
+  if (-not $Version) {
+    Write-Host "Resolving latest pixi release from GitHub..."
+    try {
+      $rel     = Invoke-RestMethod 'https://api.github.com/repos/prefix-dev/pixi/releases/latest' -UseBasicParsing
+      $Version = $rel.tag_name -replace '^v', ''
+    } catch {
+      throw "Failed to resolve latest pixi version from GitHub API: $_"
+    }
+  }
+
+  $tag    = "v$Version"
+  $arch   = 'x86_64-pc-windows-msvc'
+  $asset  = "pixi-$arch.zip"
+  $base   = "https://github.com/prefix-dev/pixi/releases/download/$tag"
+  $zipUrl = "$base/$asset"
+  $shaUrl = "$base/SHA256SUMS"
+  $tmpZip = Join-Path $env:TEMP $asset
+
+  Write-Host "Downloading pixi $tag from $zipUrl ..."
+  try {
+    Invoke-WebRequest -Uri $zipUrl -OutFile $tmpZip -UseBasicParsing
+  } catch {
+    throw "Failed to download pixi from $zipUrl : $_"
+  }
+
+  Write-Host "Fetching and verifying SHA-256 checksum from $shaUrl ..."
+  try {
+    $sums = (Invoke-RestMethod -Uri $shaUrl -UseBasicParsing) -split "`n"
+  } catch {
+    Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+    throw "Failed to fetch SHA256SUMS for pixi $tag from $shaUrl : $_"
+  }
+  $expected = ($sums | Where-Object { $_ -match [regex]::Escape($asset) } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
+  if (-not $expected) {
+    Remove-Item $tmpZip -Force
+    throw "Could not find checksum for '$asset' in SHA256SUMS"
+  }
+  $actual = (Get-FileHash -Path $tmpZip -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $expected.ToLower()) {
+    Remove-Item $tmpZip -Force
+    throw "pixi checksum mismatch!`n  Expected : $expected`n  Actual   : $actual"
+  }
+  Write-Host "Checksum verified."
+
+  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+  Expand-Archive -Path $tmpZip -DestinationPath $dest -Force
+  Remove-Item $tmpZip -Force
+
+  # Persist ~/.pixi/bin in the user PATH if not already present
+  $userPath = [System.Environment]::GetEnvironmentVariable('PATH', 'User')
+  if ($userPath -notlike "*\.pixi\bin*") {
+    [System.Environment]::SetEnvironmentVariable('PATH', "$userPath;$dest", 'User')
+    Write-Host "Added $dest to user PATH."
+  }
+}
+
 Write-Host "Installing pixi..."
-Invoke-Expression (Invoke-RestMethod 'https://pixi.sh/install.ps1')
+Install-Pixi -Version $PixiVersion
 
 # ----- Note on scientific/HPC libraries -----
 # The following libraries (available as apt packages on Ubuntu) are not reliably available
