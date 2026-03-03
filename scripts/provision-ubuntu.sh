@@ -30,6 +30,7 @@ INSTALL_DRIVER=false           # NVIDIA driver (bare metal only; ignored in WSL)
 CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"
 
 INSTALL_PYTHON=true            # system python3 + venv + pip
+PIXI_VERSION=""                # empty = resolve latest from GitHub API; e.g. "0.44.0"
 
 # ------- parse flags (bash 4/5 compatible; no ${var,,}) -------
 parse_bool() {
@@ -49,6 +50,7 @@ for arg in "$@"; do
     --install-driver=*)      INSTALL_DRIVER=$(parse_bool "${arg#*=}");;
     --cuda-toolkit-pkg=*)    CUDA_TOOLKIT_PKG="${arg#*=}";;
     --install-python=*)      INSTALL_PYTHON=$(parse_bool "${arg#*=}");;
+    --pixi-version=*)        PIXI_VERSION="${arg#*=}";;
     -h|--help)
       cat <<'USAGE'
 Usage: sudo -E bash provision-ubuntu.sh [flags]
@@ -65,6 +67,7 @@ Flags:
   --install-driver=true|false
   --cuda-toolkit-pkg=cuda-toolkit-12-4
   --install-python=true|false     # python3 + venv + pip (+ python-is-python3)
+  --pixi-version=X.Y.Z            # pin pixi release (default: latest from GitHub API)
 
 Tips:
   VERIFY_STRICT=true sudo -E bash provision-ubuntu.sh ...   # make verification failures exit non-zero
@@ -271,9 +274,87 @@ install_miniconda_user() {
 install_miniconda_user "$TARGET_USER" "$TARGET_HOME"
 
 # -------- pixi (user-level) --------
+# Install pixi by downloading the versioned binary directly from GitHub Releases and
+# verifying its SHA-256 checksum before execution (avoids piping a remote script into bash).
+install_pixi_user() {
+  local user="$1" home="$2" version="$3"
+  local dest="$home/.pixi/bin"
+  local pixi_bin="$dest/pixi"
+
+  if [ -x "$pixi_bin" ]; then
+    log "pixi already present at $pixi_bin — skipping install."
+    return 0
+  fi
+
+  # Resolve version if not pinned
+  if [ -z "$version" ]; then
+    log "Resolving latest pixi release from GitHub..."
+    version="$(curl -fsSL https://api.github.com/repos/prefix-dev/pixi/releases/latest \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))")" \
+      || { warn "Failed to resolve latest pixi version; skipping pixi install."; return 1; }
+  fi
+
+  local tag="v${version}"
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64)  arch="x86_64-unknown-linux-musl" ;;
+    aarch64) arch="aarch64-unknown-linux-musl" ;;
+    *)       warn "Unsupported architecture for pixi: $arch"; return 1 ;;
+  esac
+
+  local asset="pixi-${arch}.tar.gz"
+  local base="https://github.com/prefix-dev/pixi/releases/download/${tag}"
+  local zip_url="${base}/${asset}"
+  local sha_url="${base}/SHA256SUMS"
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  local tmp_archive="${tmp_dir}/${asset}"
+
+  log "Downloading pixi ${tag} from ${zip_url} ..."
+  curl -fsSL --output "$tmp_archive" "$zip_url" \
+    || { warn "Failed to download pixi from $zip_url"; rm -rf "$tmp_dir"; return 1; }
+
+  log "Fetching and verifying SHA-256 checksum from ${sha_url} ..."
+  local sums expected actual
+  sums="$(curl -fsSL "$sha_url")" \
+    || { warn "Failed to fetch SHA256SUMS for pixi $tag"; rm -rf "$tmp_dir"; return 1; }
+  expected="$(printf '%s\n' "$sums" | awk -v asset="$asset" '$0 ~ asset {print $1; exit}')"
+  if [ -z "$expected" ]; then
+    warn "Could not find checksum for '$asset' in SHA256SUMS"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  actual="$(sha256sum "$tmp_archive" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    warn "pixi checksum mismatch! expected=$expected actual=$actual"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  log "Checksum verified."
+
+  sudo -H -u "$user" mkdir -p "$dest"
+  tar -xzf "$tmp_archive" -C "$tmp_dir"
+  install -m 0755 -o "$user" "$tmp_dir/pixi" "$pixi_bin"
+  rm -rf "$tmp_dir"
+
+  # Add ~/.pixi/bin to PATH in the user's shell profiles if not already present
+  local updated=false
+  for rc in "$home/.bashrc" "$home/.zshrc"; do
+    if [ -f "$rc" ] && ! grep -q '\.pixi/bin' "$rc"; then
+      echo 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$rc"
+      log "Added ~/.pixi/bin to PATH in $rc"
+      updated=true
+    fi
+  done
+  if [ "$updated" = false ]; then
+    log "PATH already contains ~/.pixi/bin or no shell rc files found; no PATH update needed."
+  fi
+}
+
 log "Installing pixi for user: $TARGET_USER"
-sudo -H -u "$TARGET_USER" bash -c 'curl -fsSL https://pixi.sh/install.sh | bash' || \
-  warn "pixi install returned non-zero; it may already be present."
+install_pixi_user "$TARGET_USER" "$TARGET_HOME" "$PIXI_VERSION" || \
+  warn "pixi install failed; it may already be present or the network is unavailable."
 
 # =========================
 # Verification (non-strict)
