@@ -164,7 +164,19 @@ log "Updating apt and installing base packages..."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   ca-certificates curl wget gnupg lsb-release software-properties-common \
-  git git-lfs build-essential pkg-config cmake ninja-build unzip xz-utils p7zip-full
+  git git-lfs build-essential flex gfortran bison pkg-config cmake ninja-build \
+  unzip xz-utils p7zip-full
+
+# -------- Scientific / HPC libraries --------
+log "Installing scientific/HPC libraries..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  libopenblas-dev libopenmpi-dev \
+  libfftw3-dev libfftw3-mpi-dev \
+  libhwloc-dev libhdf5-mpi-dev \
+  libmumps-ptscotch-dev libmetis-dev \
+  libnetcdf-dev libpnetcdf-dev \
+  libptscotch-dev libscalapack-openmpi-dev \
+  libsuitesparse-dev libsuperlu-dev libsuperlu-dist-dev
 sudo -u "$TARGET_USER" git lfs install || true
 log "Updated git hooks."
 log "Git LFS initialized."
@@ -179,7 +191,7 @@ fi
 # -------- System Python (python3 + venv + pip + 'python' shim) --------
 if [ "$INSTALL_PYTHON" = "true" ]; then
   log "Installing system Python (python3, venv, pip)..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip
+  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-dev python3-venv python3-pip
   DEBIAN_FRONTEND=noninteractive apt-get install -y python-is-python3 || true
 fi
 

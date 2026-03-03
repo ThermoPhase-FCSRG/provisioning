@@ -118,6 +118,7 @@ Choco-Ensure -Pkg git   -Version $GitVersion
 Choco-Ensure -Pkg 7zip
 Choco-Ensure -Pkg cmake -Version $CMakeVersion
 Choco-Ensure -Pkg ninja -Version $NinjaVersion
+Choco-Ensure -Pkg winflexbison   # flex + bison
 
 # Visual Studio 2022 Build Tools (MSVC + MSBuild + CMake integration + Win11 SDK)
 $vsParamList = @(
@@ -294,6 +295,15 @@ if ($InstallCUDA) {
 & git config --global core.autocrlf input
 & git config --global init.defaultBranch main
 & git lfs install | Out-Null
+
+# ----- Note on scientific/HPC libraries -----
+# The following libraries (available as apt packages on Ubuntu) are not reliably available
+# via Chocolatey on Windows. Install them through conda (already configured above) or vcpkg:
+#   openblas, openmpi, fftw, hwloc, hdf5 (MPI), mumps, metis, netcdf, pnetcdf,
+#   scotch/ptscotch, scalapack, suitesparse, superlu, superlu_dist
+# Example (conda):
+#   conda install -n base -y openblas openmpi fftw hwloc hdf5 mumps metis netcdf4
+Write-Host "Note: Scientific/HPC libraries (OpenBLAS, OpenMPI, FFTW, HDF5, MUMPS, etc.) are not available via Chocolatey. Install them via conda (already configured) or vcpkg."
 
 # ----- Final status -----
 $minicondaMethod = if ($MinicondaUseDirectInstaller) { 'direct' } else { 'Chocolatey' }

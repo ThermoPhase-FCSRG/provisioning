@@ -173,6 +173,8 @@ git lfs install || true
 brew_install cmake
 brew_install ninja
 brew_install pkg-config
+brew_install flex
+brew_install bison
 if [[ "$INSTALL_LLVM" == "true" ]]; then
   brew_install llvm
   brew_install libomp
@@ -182,6 +184,24 @@ if [[ "$INSTALL_PYTHON" == "true" ]]; then
   log "Installing Homebrew Python (includes venv)..."
   brew_install python
 fi
+
+# ---------- 3a) Scientific / HPC libraries ----------
+log "Installing scientific/HPC libraries..."
+brew_install gcc            # includes gfortran
+brew_install openblas
+brew_install open-mpi
+brew_install fftw           # includes MPI support when open-mpi is present
+brew_install hwloc
+brew_install hdf5
+brew_install mumps
+brew_install metis
+brew_install netcdf
+brew_install parallel-netcdf
+brew_install scotch         # includes ptscotch
+brew_install scalapack
+brew_install suite-sparse
+brew_install superlu
+brew_install superlu_dist
 
 # ---------- 4) Apps (casks) ----------
 if [[ "$INSTALL_VSCODE" == "true" ]]; then
