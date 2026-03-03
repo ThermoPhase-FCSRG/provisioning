@@ -239,9 +239,9 @@ if [[ "$INSTALL_MINIFORGE" == "true" ]]; then
             "/opt/conda/bin/conda"; do
     [[ -x "$_p" ]] && { CONDA_BIN="$_p"; break; }
   done
-  [[ -z "$CONDA_BIN" ]] && CONDA_BIN="$(command -v conda 2>/dev/null || true)"
+  [[ -z "$CONDA_BIN" ]] && CONDA_BIN="$(type -P conda 2>/dev/null || true)"
 
-  if [[ -n "$CONDA_BIN" ]]; then
+  if [[ -n "$CONDA_BIN" && -x "$CONDA_BIN" ]]; then
     log "Conda already found at $CONDA_BIN — skipping Miniforge download/install."
   elif [[ ! -d "$MINIFORGE_PREFIX" ]]; then
     tmp_inst="/tmp/miniforge.sh"
