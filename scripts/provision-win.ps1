@@ -296,6 +296,10 @@ if ($InstallCUDA) {
 & git config --global init.defaultBranch main
 & git lfs install | Out-Null
 
+# ---- pixi ----
+Write-Host "Installing pixi..."
+Invoke-Expression (Invoke-RestMethod 'https://pixi.sh/install.ps1')
+
 # ----- Note on scientific/HPC libraries -----
 # The following libraries (available as apt packages on Ubuntu) are not reliably available
 # via Chocolatey on Windows. Install them through conda (already configured above) or vcpkg:
@@ -318,3 +322,4 @@ if ($InstallWindowsTerminal) { Write-Host "Windows Terminal installed (or alread
 if ($InstallCmder)          { Write-Host "Cmder installed (full or mini as configured). Launch 'Cmder' from Start menu." }
 if ($InstallCUDA)           { Write-Host "CUDA prep done. If driver was installed, reboot is recommended before using PyTorch CUDA." }
 if ($InstallDocker)         { Write-Host "Docker Desktop installed. Sign out/in once if 'docker-users' membership is new." }
+Write-Host "pixi installed. Open a NEW terminal to get pixi on PATH (installs to $env:USERPROFILE\.pixi\bin)."

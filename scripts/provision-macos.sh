@@ -175,6 +175,7 @@ brew_install ninja
 brew_install pkg-config
 brew_install flex
 brew_install bison
+brew_install pixi
 if [[ "$INSTALL_LLVM" == "true" ]]; then
   brew_install llvm
   brew_install libomp
@@ -258,7 +259,7 @@ fi
 echo
 log "Provisioning complete (profile: $PROFILE)."
 echo "• Homebrew: $(brew --version | head -n1)"
-core_tools="git, git-lfs, cmake, ninja, pkg-config"
+core_tools="git, git-lfs, cmake, ninja, pkg-config, pixi"
 if [[ "$INSTALL_LLVM" == "true" ]]; then
   core_tools="$core_tools, llvm, libomp"
 fi

@@ -256,6 +256,11 @@ install_miniconda_user() {
 
 install_miniconda_user "$TARGET_USER" "$TARGET_HOME"
 
+# -------- pixi (user-level) --------
+log "Installing pixi for user: $TARGET_USER"
+sudo -H -u "$TARGET_USER" bash -c 'curl -fsSL https://pixi.sh/install.sh | bash' || \
+  warn "pixi install returned non-zero; it may already be present."
+
 # =========================
 # Verification (non-strict)
 # =========================
@@ -279,6 +284,15 @@ echo "[INFO] Verifying installation…"
 check_cmd git
 check_cmd cmake
 check_cmd ninja
+
+# pixi installs into ~/.pixi/bin; check there if not yet on PATH
+if command -v pixi >/dev/null 2>&1; then
+  pass "pixi present ($(pixi --version 2>/dev/null))"
+elif [ -x "$TARGET_HOME/.pixi/bin/pixi" ]; then
+  pass "pixi present at $TARGET_HOME/.pixi/bin/pixi (open a NEW shell to get it on PATH)"
+else
+  warnv "pixi not found"
+fi
 
 if [ "$INSTALL_PYTHON" = "true" ]; then
   if command -v python3 >/dev/null 2>&1; then
@@ -335,6 +349,7 @@ echo
 log "Provisioning complete."
 echo "• Miniconda for $TARGET_USER: $TARGET_HOME/miniconda3"
 echo "• conda-forge enabled (strict), conda init done for bash, zsh."
+echo "• pixi installed for $TARGET_USER: $TARGET_HOME/.pixi (open a NEW shell or add ~/.pixi/bin to PATH)."
 [ "$INSTALL_PYTHON" = "true" ] && echo "• System Python installed: python3 + venv + pip (use: 'python3 -m venv .venv')."
 [ "$INSTALL_VSCODE" = "true" ] && echo "• VS Code installed (code)."
 [ "$INSTALL_DOCKER" = "true" ] && $IS_WSL && echo "• Docker: use Docker Desktop w/ WSL integration."
