@@ -18,7 +18,7 @@ trap 'on_exit' EXIT
 
 # -------- require root (re-exec with sudo) --------
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-  exec sudo -E bash "$0" "$@"
+  exec sudo bash "$0" "$@"
 fi
 
 # -------- defaults --------
@@ -27,9 +27,21 @@ INSTALL_VSCODE=true
 INSTALL_DOCKER=true
 INSTALL_CUDA=false
 INSTALL_DRIVER=false           # NVIDIA driver (bare metal only; ignored in WSL)
-CUDA_TOOLKIT_PKG="cuda-toolkit-12-4"
+CUDA_TOOLKIT_PKG="cuda-toolkit"
+NVIDIA_DRIVER_PKG="nvidia-open"
 
 INSTALL_PYTHON=true            # system python3 + venv + pip
+INSTALL_PIXI=true
+
+# CLI overrides are collected separately so profiles are applied first.
+CLI_INSTALL_VSCODE=""
+CLI_INSTALL_DOCKER=""
+CLI_INSTALL_CUDA=""
+CLI_INSTALL_DRIVER=""
+CLI_CUDA_TOOLKIT_PKG=""
+CLI_NVIDIA_DRIVER_PKG=""
+CLI_INSTALL_PYTHON=""
+CLI_INSTALL_PIXI=""
 
 # ------- parse flags (bash 4/5 compatible; no ${var,,}) -------
 parse_bool() {
@@ -43,31 +55,37 @@ parse_bool() {
 for arg in "$@"; do
   case "$arg" in
     --profile=*)             PROFILE="${arg#*=}";;
-    --install-vscode=*)      INSTALL_VSCODE=$(parse_bool "${arg#*=}");;
-    --install-docker=*)      INSTALL_DOCKER=$(parse_bool "${arg#*=}");;
-    --install-cuda=*)        INSTALL_CUDA=$(parse_bool "${arg#*=}");;
-    --install-driver=*)      INSTALL_DRIVER=$(parse_bool "${arg#*=}");;
-    --cuda-toolkit-pkg=*)    CUDA_TOOLKIT_PKG="${arg#*=}";;
-    --install-python=*)      INSTALL_PYTHON=$(parse_bool "${arg#*=}");;
+    --install-vscode=*)      CLI_INSTALL_VSCODE=$(parse_bool "${arg#*=}");;
+    --install-docker=*)      CLI_INSTALL_DOCKER=$(parse_bool "${arg#*=}");;
+    --install-cuda=*)        CLI_INSTALL_CUDA=$(parse_bool "${arg#*=}");;
+    --install-driver=*)      CLI_INSTALL_DRIVER=$(parse_bool "${arg#*=}");;
+    --cuda-toolkit-pkg=*)    CLI_CUDA_TOOLKIT_PKG="${arg#*=}";;
+    --nvidia-driver-pkg=*)   CLI_NVIDIA_DRIVER_PKG="${arg#*=}";;
+    --install-python=*)      CLI_INSTALL_PYTHON=$(parse_bool "${arg#*=}");;
+    --install-pixi=*)        CLI_INSTALL_PIXI=$(parse_bool "${arg#*=}");;
     -h|--help)
       cat <<'USAGE'
-Usage: sudo -E bash provision-ubuntu.sh [flags]
+Usage: sudo bash provision-ubuntu.sh [flags]
 
 Profiles (set sensible defaults; flags override):
-  --profile=default    VS Code ON, Docker ON
-  --profile=minimal    VS Code ON, Docker OFF
-  --profile=gpu        VS Code ON, Docker ON, CUDA toolkit ON (driver optional)
+  --profile=default    VS Code ON, Docker ON, Pixi ON
+  --profile=minimal    VS Code ON, Docker OFF, Pixi ON
+  --profile=gpu        VS Code ON, Docker ON, Pixi ON, NVIDIA driver/toolkit ON
 
 Flags:
   --install-vscode=true|false
   --install-docker=true|false
   --install-cuda=true|false
   --install-driver=true|false
-  --cuda-toolkit-pkg=cuda-toolkit-12-4
+  --cuda-toolkit-pkg=cuda-toolkit
+  --nvidia-driver-pkg=nvidia-open
   --install-python=true|false     # python3 + venv + pip (+ python-is-python3)
+  --install-pixi=true|false
 
 Tips:
-  VERIFY_STRICT=true sudo -E bash provision-ubuntu.sh ...   # make verification failures exit non-zero
+  sudo env VERIFY_STRICT=true bash provision-ubuntu.sh ...  # make verification failures exit non-zero
+  Prebuilt PyTorch/Pixi environments normally need only a compatible NVIDIA
+  driver; use --profile=gpu --install-cuda=false when no system nvcc is needed.
 USAGE
       exit 0;;
     *) err "Unknown flag: $arg"; exit 2;;
@@ -81,10 +99,21 @@ case "$PROFILE" in
     ;;
   gpu)
     INSTALL_CUDA=true
+    INSTALL_DRIVER=true
     ;;
   default) ;;
   *) err "Invalid --profile: $PROFILE (use default|minimal|gpu)"; exit 2;;
 esac
+
+# Explicit flags override profile defaults.
+[ -n "$CLI_INSTALL_VSCODE" ] && INSTALL_VSCODE="$CLI_INSTALL_VSCODE"
+[ -n "$CLI_INSTALL_DOCKER" ] && INSTALL_DOCKER="$CLI_INSTALL_DOCKER"
+[ -n "$CLI_INSTALL_CUDA" ] && INSTALL_CUDA="$CLI_INSTALL_CUDA"
+[ -n "$CLI_INSTALL_DRIVER" ] && INSTALL_DRIVER="$CLI_INSTALL_DRIVER"
+[ -n "$CLI_CUDA_TOOLKIT_PKG" ] && CUDA_TOOLKIT_PKG="$CLI_CUDA_TOOLKIT_PKG"
+[ -n "$CLI_NVIDIA_DRIVER_PKG" ] && NVIDIA_DRIVER_PKG="$CLI_NVIDIA_DRIVER_PKG"
+[ -n "$CLI_INSTALL_PYTHON" ] && INSTALL_PYTHON="$CLI_INSTALL_PYTHON"
+[ -n "$CLI_INSTALL_PIXI" ] && INSTALL_PIXI="$CLI_INSTALL_PIXI"
 
 # -------- detect env --------
 IS_WSL=false
@@ -92,10 +121,11 @@ if grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=true; fi
 
 # -------- target user (for user-level conda) --------
 TARGET_USER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
-TARGET_HOME="$(eval echo ~"$TARGET_USER")"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[ -n "$TARGET_HOME" ] || { err "Could not resolve home directory for user: $TARGET_USER"; exit 1; }
 
 log "Profile: $PROFILE"
-log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG Python:$INSTALL_PYTHON"
+log "Flags -> VSCode:$INSTALL_VSCODE Docker:$INSTALL_DOCKER CUDA:$INSTALL_CUDA Driver:$INSTALL_DRIVER ToolkitPkg:$CUDA_TOOLKIT_PKG DriverPkg:$NVIDIA_DRIVER_PKG Python:$INSTALL_PYTHON Pixi:$INSTALL_PIXI"
 log "Installing for user: $TARGET_USER (home: $TARGET_HOME)"
 
 # -------- VS Code repo: make it canonical & conflict-free --------
@@ -158,8 +188,55 @@ setup_docker_repo() {
     >/etc/apt/sources.list.d/docker.list
 }
 
+# -------- NVIDIA CUDA/driver repo --------
+setup_nvidia_repo() {
+  local distro repo_arch keyring_deb
+
+  if $IS_WSL; then
+    distro="wsl-ubuntu"
+  else
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    if [ "${ID:-}" != "ubuntu" ] || [ -z "${VERSION_ID:-}" ]; then
+      err "CUDA repository setup supports Ubuntu only (detected ID=${ID:-unknown}, VERSION_ID=${VERSION_ID:-unknown})."
+      return 1
+    fi
+    distro="ubuntu$(printf '%s' "$VERSION_ID" | tr -d '.')"
+  fi
+
+  case "$(dpkg --print-architecture)" in
+    amd64) repo_arch="x86_64" ;;
+    arm64)
+      if $IS_WSL; then
+        err "The NVIDIA WSL repository is not supported on arm64 by this script."
+        return 1
+      fi
+      repo_arch="sbsa"
+      ;;
+    *)
+      err "Unsupported architecture for the NVIDIA repository: $(dpkg --print-architecture)"
+      return 1
+      ;;
+  esac
+
+  keyring_deb="$(mktemp /tmp/cuda-keyring.XXXXXX.deb)"
+  log "Configuring NVIDIA repository for $distro/$repo_arch..."
+  if ! curl -fsSL \
+      "https://developer.download.nvidia.com/compute/cuda/repos/$distro/$repo_arch/cuda-keyring_1.1-1_all.deb" \
+      -o "$keyring_deb"; then
+    rm -f "$keyring_deb"
+    err "No NVIDIA repository found for $distro/$repo_arch. Check NVIDIA's supported distributions."
+    return 1
+  fi
+  dpkg -i "$keyring_deb"
+  rm -f "$keyring_deb"
+  apt-get update
+}
+
 # -------- base packages + git-lfs init --------
-setup_code_repo
+if [ "$INSTALL_VSCODE" = "true" ]; then
+  setup_code_repo
+fi
 log "Updating apt and installing base packages..."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -197,10 +274,30 @@ if [ "$INSTALL_DOCKER" = "true" ]; then
   fi
 fi
 
-# -------- CUDA Toolkit (driver optional; in WSL2 use Windows driver + Linux toolkit) --------
+# -------- NVIDIA driver and CUDA Toolkit --------
+# The driver is a host concern. The Toolkit is optional because prebuilt
+# PyTorch/Conda/Pixi packages normally supply their own CUDA user-space runtime.
+if [ "$INSTALL_CUDA" = "true" ] || { [ "$INSTALL_DRIVER" = "true" ] && ! $IS_WSL; }; then
+  setup_nvidia_repo
+fi
+
+REBOOT_REQUIRED=false
+if [ "$INSTALL_DRIVER" = "true" ]; then
+  if $IS_WSL; then
+    warn "Skipping Linux NVIDIA driver in WSL2; install/update the NVIDIA driver on Windows."
+  else
+    log "Installing NVIDIA driver package: $NVIDIA_DRIVER_PKG"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      "linux-headers-$(uname -r)" "$NVIDIA_DRIVER_PKG"
+    REBOOT_REQUIRED=true
+  fi
+fi
+
 if [ "$INSTALL_CUDA" = "true" ]; then
-  if [ "$INSTALL_DRIVER" = "true" ]; then
-    warn "Driver install is for bare-metal Ubuntu only. On WSL2, the NVIDIA driver must be on Windows."
+  if ! apt-cache show "$CUDA_TOOLKIT_PKG" >/dev/null 2>&1; then
+    err "CUDA toolkit package '$CUDA_TOOLKIT_PKG' is unavailable for this Ubuntu release."
+    err "Use --cuda-toolkit-pkg=cuda-toolkit for the latest supported release, or disable the system Toolkit."
+    exit 1
   fi
   log "Installing CUDA toolkit package: $CUDA_TOOLKIT_PKG"
   DEBIAN_FRONTEND=noninteractive apt-get install -y "$CUDA_TOOLKIT_PKG"
@@ -208,11 +305,12 @@ fi
 
 # -------- Miniconda (user-level) --------
 install_miniconda_user() {
-  local u="$1" h="$2"
+  local u="$1" h="$2" group
   local prefix="$h/miniconda3"
+  group="$(id -gn "$u")"
   log "Installing Miniconda for user: $u"
   if [ ! -d "$prefix" ]; then
-    local url arch installer
+    local url arch installer tmp
     arch="$(uname -m)"
     case "$arch" in
       x86_64|amd64) installer="Miniconda3-latest-Linux-x86_64.sh" ;;
@@ -220,9 +318,9 @@ install_miniconda_user() {
       *) err "Unsupported arch for Miniconda: $arch"; return 1 ;;
     esac
     url="https://repo.anaconda.com/miniconda/$installer"
-    tmp="/tmp/$installer"
+    tmp="$(mktemp "/tmp/${installer}.XXXXXX")"
     curl -fsSL "$url" -o "$tmp"
-    chown "$u":"$u" "$tmp"
+    chown "$u":"$group" "$tmp"
     sudo -H -u "$u" bash "$tmp" -b -p "$prefix"
     rm -f "$tmp"
   else
@@ -243,6 +341,32 @@ install_miniconda_user() {
 }
 
 install_miniconda_user "$TARGET_USER" "$TARGET_HOME"
+
+# -------- Pixi (user-level) --------
+install_pixi_user() {
+  local u="$1" h="$2" pixi_bin="$2/.pixi/bin/pixi" installer group
+  if [ -x "$pixi_bin" ]; then
+    log "Pixi already present ($("$pixi_bin" --version 2>/dev/null))."
+    return 0
+  fi
+
+  log "Installing Pixi for user: $u"
+  installer="$(mktemp /tmp/pixi-install.XXXXXX.sh)"
+  curl -fsSL https://pixi.sh/install.sh -o "$installer"
+  group="$(id -gn "$u")"
+  chown "$u":"$group" "$installer"
+  sudo -H -u "$u" env HOME="$h" bash "$installer"
+  rm -f "$installer"
+
+  if [ ! -x "$pixi_bin" ]; then
+    err "Pixi binary not found at $pixi_bin after installation."
+    return 1
+  fi
+}
+
+if [ "$INSTALL_PIXI" = "true" ]; then
+  install_pixi_user "$TARGET_USER" "$TARGET_HOME"
+fi
 
 # =========================
 # Verification (non-strict)
@@ -302,12 +426,43 @@ else
   warnv "conda not found (open a NEW shell or verify Miniconda path)"
 fi
 
+if [ "$INSTALL_PIXI" = "true" ]; then
+  PIXI_BIN="$TARGET_HOME/.pixi/bin/pixi"
+  if [ -x "$PIXI_BIN" ]; then
+    pass "pixi present ($("$PIXI_BIN" --version 2>/dev/null))"
+  else
+    warnv "pixi not found at $PIXI_BIN"
+  fi
+fi
+
 if [ "$INSTALL_DOCKER" = "true" ]; then
   if command -v docker >/dev/null 2>&1; then
     pass "docker present ($(docker --version 2>/dev/null))"
   else
     $IS_WSL && warnv "docker not on PATH in WSL (expected if using Docker Desktop on Windows)"
     $IS_WSL || warnv "docker not found on PATH"
+  fi
+fi
+
+if [ "$INSTALL_CUDA" = "true" ]; then
+  NVCC_BIN="$(command -v nvcc 2>/dev/null || true)"
+  if [ -z "$NVCC_BIN" ] && [ -x /usr/local/cuda/bin/nvcc ]; then
+    NVCC_BIN="/usr/local/cuda/bin/nvcc"
+  fi
+  if [ -n "$NVCC_BIN" ]; then
+    pass "nvcc present ($("$NVCC_BIN" --version | tail -n1))"
+  else
+    warnv "nvcc not found; add /usr/local/cuda/bin to PATH if the Toolkit installed successfully"
+  fi
+fi
+
+if [ "$INSTALL_CUDA" = "true" ] || [ "$INSTALL_DRIVER" = "true" ]; then
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    pass "NVIDIA driver operational ($(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | sed -n '1p'))"
+  elif $IS_WSL; then
+    warnv "nvidia-smi is unavailable in WSL; install/update the NVIDIA driver on Windows"
+  else
+    warnv "nvidia-smi is unavailable; a reboot may be required after driver installation"
   fi
 fi
 
@@ -321,6 +476,10 @@ fi
 # -------- summary --------
 echo
 log "Provisioning complete."
+[ "$INSTALL_PIXI" = "true" ] && echo "• Pixi installed for $TARGET_USER: $TARGET_HOME/.pixi/bin/pixi."
+[ "$INSTALL_CUDA" = "true" ] && echo "• CUDA Toolkit package installed: $CUDA_TOOLKIT_PKG."
+[ "$INSTALL_DRIVER" = "true" ] && ! $IS_WSL && echo "• NVIDIA driver package installed: $NVIDIA_DRIVER_PKG."
+$REBOOT_REQUIRED && warn "Reboot required to load the newly installed NVIDIA driver."
 echo "• Miniconda for $TARGET_USER: $TARGET_HOME/miniconda3"
 echo "• conda-forge enabled (strict), conda init done for bash, zsh."
 [ "$INSTALL_PYTHON" = "true" ] && echo "• System Python installed: python3 + venv + pip (use: 'python3 -m venv .venv')."

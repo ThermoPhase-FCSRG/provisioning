@@ -5,6 +5,7 @@
   - Installs **system Python** first (via Chocolatey) with venv/pip (toggle with -InstallPython).
   - Installs Miniconda using the **official latest installer by default** (toggle with -MinicondaUseDirectInstaller).
     * Falls back to Chocolatey if you set -MinicondaUseDirectInstaller:$false.
+  - Installs Pixi for the current user by default (toggle with -InstallPixi).
   - Configures conda-forge (strict). No envs created.
   - Optional CUDA prep: NVIDIA driver (optional) and CUDA Toolkit.
   - Ensures ExecutionPolicy (CurrentUser -> RemoteSigned) so PowerShell profile loads (conda init works).
@@ -32,6 +33,7 @@ param(
   [bool] $InstallCmder             = $true,
   [string] $CmderPackageId         = "cmder",   # "cmder" or "cmdermini"
   [bool] $InstallDocker            = $true,
+  [bool] $InstallPixi              = $true,
 
   # ===== System Python toggle =====
   [bool] $InstallPython            = $true,     # Chocolatey "python" (includes venv/pip)
@@ -196,8 +198,11 @@ function Install-Miniconda-Direct {
     "/D=$InstallDir"
   )
   Write-Host "Running Miniconda installer (silent) to $InstallDir ..."
-  Start-Process -FilePath $tmp -ArgumentList $args -Wait -NoNewWindow
+  $installerProcess = Start-Process -FilePath $tmp -ArgumentList $args -Wait -NoNewWindow -PassThru
   Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  if ($installerProcess.ExitCode -ne 0) {
+    throw "Miniconda installer failed with exit code $($installerProcess.ExitCode)."
+  }
 }
 
 Write-Host "Installing Miniconda..."
@@ -236,6 +241,55 @@ if ($LASTEXITCODE -ne 0) { throw "conda config add conda-forge failed." }
 & $condaBat init powershell
 & $condaBat init cmd.exe
 
+# Pixi (current user)
+function Install-Pixi {
+  $existing = Get-Command pixi.exe -ErrorAction SilentlyContinue
+  if ($existing) {
+    Write-Host "Pixi already installed: $($existing.Source)"
+    return $existing.Source
+  }
+
+  $pixiBinDirs = @(
+    (Join-Path $env:LOCALAPPDATA 'pixi\bin'),
+    (Join-Path $env:USERPROFILE '.pixi\bin')
+  )
+  $pixiExe = $pixiBinDirs |
+    ForEach-Object { Join-Path $_ 'pixi.exe' } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+  if (-not $pixiExe) {
+    $installer = Join-Path $env:TEMP 'install-pixi.ps1'
+    Write-Host "Downloading the official Pixi installer..."
+    Invoke-WebRequest -Uri 'https://pixi.sh/install.ps1' -OutFile $installer -UseBasicParsing
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $installer
+    $pixiExitCode = $LASTEXITCODE
+    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    if ($pixiExitCode -ne 0) { throw "Pixi installer failed with exit code $pixiExitCode." }
+
+    $pixiExe = $pixiBinDirs |
+      ForEach-Object { Join-Path $_ 'pixi.exe' } |
+      Where-Object { Test-Path $_ } |
+      Select-Object -First 1
+  }
+
+  if (-not $pixiExe) {
+    throw "Pixi binary not found after installation under LOCALAPPDATA or USERPROFILE."
+  }
+  $pixiBinDir = Split-Path -Parent $pixiExe
+  if (($env:Path -split ';') -notcontains $pixiBinDir) {
+    $env:Path = "$pixiBinDir;$env:Path"
+  }
+  return $pixiExe
+}
+
+$pixiExe = $null
+if ($InstallPixi) {
+  $pixiExe = Install-Pixi
+  $pixiVersion = & $pixiExe --version
+  if ($LASTEXITCODE -ne 0) { throw "Pixi verification failed." }
+  Write-Host "Pixi installed: $pixiVersion"
+}
+
 # Ensure PowerShell profile can run
 try {
   $cur = Get-ExecutionPolicy -Scope CurrentUser -ErrorAction SilentlyContinue
@@ -264,29 +318,44 @@ try {
   Write-Warning "Could not set ExecutionPolicy for PowerShell 7 CurrentUser: $_"
 }
 
-# CUDA prep (optional)
-if ($InstallCUDA) {
-  Write-Host "CUDA prep enabled."
-  if ($InstallNvidiaDriver) {
-    Choco-Ensure -Pkg nvidia-display-driver -Version $NvidiaDriverVersion
-    Write-Host "NVIDIA display driver installed (or already present). A reboot may be required."
-  } else {
-    Write-Host "Skipping NVIDIA driver install (InstallNvidiaDriver=false). Ensure a compatible driver is already installed."
-  }
+# NVIDIA driver and CUDA Toolkit are independent. Prebuilt PyTorch/Pixi
+# environments usually need only a compatible host driver.
+if ($InstallNvidiaDriver) {
+  Choco-Ensure -Pkg nvidia-display-driver -Version $NvidiaDriverVersion
+  Write-Host "NVIDIA display driver installed (or already present). A reboot may be required."
+}
 
+if ($InstallCUDA) {
+  Write-Host "Installing CUDA Toolkit."
   Choco-Ensure -Pkg cuda -Version $CudaToolkitVersion
 
   # Set CUDA_PATH
-  $cudaRoot = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+  $cudaRoot = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^v\d+(\.\d+)+$' } |
+    Sort-Object { [version]($_.Name.TrimStart('v')) } -Descending |
+    Select-Object -First 1
   if ($cudaRoot) {
     [Environment]::SetEnvironmentVariable('CUDA_PATH', $cudaRoot.FullName, 'Machine')
     $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
-    $append = @("$($cudaRoot.FullName)\bin","$($cudaRoot.FullName)\libnvvp")
-    foreach ($p in $append) { if ($machinePath -notlike "*$p*") { $machinePath += ";" + $p } }
+    $append = @("$($cudaRoot.FullName)\bin") | Where-Object { Test-Path $_ }
+    foreach ($p in $append) {
+      if (($machinePath -split ';') -notcontains $p) { $machinePath += ";" + $p }
+    }
     [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
+    $env:CUDA_PATH = $cudaRoot.FullName
+    $env:Path = "$($cudaRoot.FullName)\bin;$env:Path"
     Write-Host "Configured CUDA_PATH -> $($cudaRoot.FullName)"
   } else {
     Write-Warning "CUDA toolkit folder not found; PATH/CUDA_PATH not updated."
+  }
+}
+
+if ($InstallNvidiaDriver -or $InstallCUDA) {
+  $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+  if ($nvidiaSmi) {
+    & $nvidiaSmi.Source --query-gpu=name,driver_version --format=csv,noheader
+  } else {
+    Write-Warning "nvidia-smi is not available in this session; reboot if the driver was just installed."
   }
 }
 
@@ -298,6 +367,8 @@ if ($InstallCUDA) {
 # ----- Final status -----
 $minicondaMethod = if ($MinicondaUseDirectInstaller) { 'direct' } else { 'Chocolatey' }
 
+if ($InstallPixi)           { Write-Host "Pixi installed for the current user. Open a new terminal if 'pixi' is not yet on PATH." }
+if ($InstallNvidiaDriver)   { Write-Host "NVIDIA driver installation requested; reboot before using GPU workloads." }
 Write-Host "Provisioning complete (profile: $Profile)."
 if ($InstallPython)        { Write-Host "System Python installed (with venv & pip). Use 'py -3 -m venv .venv' or 'python -m venv .venv'." }
 Write-Host "Miniconda installed (via $minicondaMethod). conda-forge enabled with strict priority."
