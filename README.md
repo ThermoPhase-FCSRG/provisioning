@@ -25,6 +25,9 @@ Ubuntu CLI flags
 | `--nvidia-driver-pkg` | `nvidia-open` | NVIDIA driver package used on bare-metal Ubuntu |
 | `--install-python` | `true` | Install system Python3 + venv + pip |
 | `--install-pixi` | `true` | Install Pixi for the invoking user |
+| `--install-oh-my-zsh` | `false` | Explicitly install/configure Oh My Zsh, Powerlevel10k and plugins |
+| `--target-user` | invoking user | Override the user that receives user-scoped tools |
+| `--target-home` | NSS/getent result | Override a non-standard home with an absolute path |
 
 macOS CLI flags
 
@@ -40,6 +43,7 @@ macOS CLI flags
 | `--install-llvm` | `true` | Install Homebrew llvm and libomp |
 | `--install-python` | `true` | Install Homebrew Python (includes venv) |
 | `--install-pixi` | `true` | Install Pixi through Homebrew |
+| `--install-oh-my-zsh` | `false` | Explicitly install/configure Oh My Zsh, Powerlevel10k and plugins |
 
 Windows PowerShell parameters
 
@@ -58,8 +62,8 @@ Windows PowerShell parameters
 
 ## What they install (summary)
 
-- Ubuntu: base dev tools, Pixi, optional VS Code and Docker Engine, Miniconda for the invoking user, and independently selectable NVIDIA driver and CUDA Toolkit.
-- macOS: Homebrew, Pixi, core dev tooling, common casks, and Miniforge installed into the user's home.
+- Ubuntu: base dev tools, Pixi, optional VS Code and Docker Engine, Miniconda for the invoking user, independently selectable NVIDIA driver and CUDA Toolkit, and explicit opt-in terminal customization.
+- macOS: Homebrew, Pixi, core dev tooling, common casks, Miniforge, and explicit opt-in terminal customization.
 - Windows: core tools via Chocolatey, Pixi, optional desktop tools, Miniconda, and independently selectable NVIDIA driver and CUDA Toolkit.
 
 ## PyTorch and torch-flash recommendation
@@ -106,6 +110,9 @@ CLI flags (override profile defaults)
 - `--nvidia-driver-pkg=nvidia-open` (use `cuda-drivers` for proprietary kernel modules)
 - `--install-python=true|false`
 - `--install-pixi=true|false`
+- `--install-oh-my-zsh=true|false` (default `false`; no profile enables it)
+- `--target-user=USER`
+- `--target-home=/absolute/path`
 
 Examples
 
@@ -142,6 +149,26 @@ sudo bash scripts/provision-ubuntu.sh \
 sudo env VERIFY_STRICT=true bash scripts/provision-ubuntu.sh --profile=minimal
 ```
 
+- Minimal profile with the optional Zsh customization:
+
+```bash
+sudo bash scripts/provision-ubuntu.sh \
+  --profile=minimal \
+  --install-oh-my-zsh=true
+```
+
+- Non-standard or centrally managed home:
+
+```bash
+sudo bash scripts/provision-ubuntu.sh \
+  --profile=minimal \
+  --install-oh-my-zsh=true \
+  --target-user=volpatto \
+  --target-home=/prj/thermophase/volpatto
+```
+
+If `getent passwd volpatto | cut -d: -f6` already prints `/prj/thermophase/volpatto`, both target overrides are optional. Keep them when provisioning from an administrative shell or when NSS reports a different home.
+
 What the script does (high level)
 
 - Detects the real (non-root) user who invoked sudo so Miniconda installs into their home.
@@ -150,6 +177,7 @@ What the script does (high level)
 - Installs Pixi for the invoking non-root user.
 - Optionally installs the NVIDIA driver and CUDA Toolkit as independent choices.
 - Installs Miniconda into the invoking user's home and runs `conda init` for bash and zsh.
+- When explicitly requested, configures Zsh only after the other dependencies are installed.
 
 Notes & gotchas
 
@@ -160,6 +188,7 @@ Notes & gotchas
 - NVIDIA packages: the script derives the repository from the Ubuntu release and architecture. A pinned Toolkit package must exist in that repository; the unversioned `cuda-toolkit` default tracks the latest supported release.
 - CUDA driver: driver installation is for bare-metal Ubuntu only. On WSL2, use the Windows NVIDIA driver. Reboot after installing or changing the bare-metal driver.
 - Pixi: installed under `~/.pixi`; open a new terminal if it is not immediately on `PATH`.
+- Non-standard homes: the default comes from NSS through `getent passwd`; `--target-home` supports an explicit absolute path such as `/prj/thermophase/volpatto`. The home must be mounted and writable when the script runs. Writes inside it run as `--target-user`, which is compatible with LDAP/automount/NFS homes where root access may be restricted.
 
 ## macOS: usage, profiles and CLI flags
 
@@ -188,6 +217,15 @@ CLI flags (override profile defaults)
 - `--install-llvm=true|false`
 - `--install-python=true|false`
 - `--install-pixi=true|false`
+- `--install-oh-my-zsh=true|false` (default `false`; no profile enables it)
+
+Example: minimal profile with the optional Zsh customization:
+
+```bash
+bash scripts/provision-macos.sh \
+  --profile=minimal \
+  --install-oh-my-zsh=true
+```
 
 What the script does (high level)
 
@@ -197,6 +235,7 @@ What the script does (high level)
 - Installs Miniforge into `--miniforge-prefix`, sets conda-forge (strict), runs `conda init` for bash and zsh.
 - Installs Pixi through Homebrew.
 - Optionally installs Rosetta 2 on Apple Silicon when requested.
+- When explicitly requested, configures Zsh only after the other dependencies are installed.
 
 Notes & gotchas
 
@@ -207,6 +246,18 @@ Notes & gotchas
 - Open a NEW terminal to get `conda` on PATH, or run `source "$MINIFORGE_PREFIX/etc/profile.d/conda.sh"` then `conda activate`.
 - For Python venvs with Homebrew Python: `python3 -m venv .venv && source .venv/bin/activate`.
 - CUDA is not supported on current macOS. For PyTorch on Apple Silicon, use MPS (`torch.device("mps")`).
+
+## Optional Oh My Zsh configuration (Ubuntu and macOS only)
+
+Terminal customization is never enabled by `default`, `minimal`, or `gpu`. It runs only when `--install-oh-my-zsh=true` is passed explicitly. There is intentionally no equivalent Windows parameter.
+
+The optional step installs Oh My Zsh, Powerlevel10k, `zsh-autosuggestions`, `zsh-syntax-highlighting`, Pygments for the `colorize` plugin, and the four MesloLGS NF fonts. It generates a portable `.zshrc` based on the supplied macOS configuration, including the Git, Python, virtualenv, pyenv and Conda plugins, Pixi on `PATH`, and the `activate_firedrake` helper.
+
+Before replacing any existing `.zshrc`, the script creates a timestamped `.zshrc.pre-thermophase.*` backup. Paths are based on `$HOME`, not a hard-coded `/Users/...` or `/home/...`. After all provisioning and verification steps, an interactive terminal launches `p10k configure`; non-interactive runs print the command to execute later.
+
+On Ubuntu, the script first attempts to change the selected user's login shell with `chsh` and verifies the result through NSS. If the operation is blocked by LDAP/institutional policy or the change is not reflected by NSS, it leaves the account's registered shell unchanged and appends one idempotent, marked fallback block to the selected home's `.bashrc`. The guarded block uses `exec zsh` only for an interactive TTY. This Ubuntu-only fallback is installed only after `--install-oh-my-zsh=true` was explicitly requested and only when the login-shell change cannot be confirmed; macOS behavior is unchanged. The provisioning never replaces or relinks `/bin/sh`.
+
+Powerlevel10k stores the visual choices in `~/.p10k.zsh`. Because that file was not part of the supplied configuration, the wizard creates it on each new machine. To reproduce the prompt pixel-for-pixel, copy the existing Mac's `.p10k.zsh` after provisioning. Select `MesloLGS NF` as the terminal font if the glyph checks fail.
 
 ## Windows: usage and parameters
 
@@ -316,6 +367,9 @@ nvcc --version        # if CUDA installed
 - CUDA package not found on Ubuntu: prefer `--cuda-toolkit-pkg=cuda-toolkit`, or inspect available pins with `apt-cache search '^cuda-toolkit-[0-9]'` after the NVIDIA repository is configured.
 - PyTorch reports no GPU: run `nvidia-smi`, then check `torch.cuda.is_available()` and `torch.version.cuda` inside the same Pixi/Conda environment. The CUDA version printed by `nvidia-smi` is the driver's maximum supported API, not necessarily a system Toolkit installation.
 - Pixi not on `PATH`: open a new terminal. On Ubuntu it is installed under `~/.pixi/bin`; on macOS Homebrew provides it; on Windows the official installer normally uses `%LOCALAPPDATA%\pixi\bin` and updates the user `PATH`.
+- Oh My Zsh not enabled: this is intentional; rerun the Ubuntu/macOS script with `--install-oh-my-zsh=true`.
+- Powerlevel10k icons are broken: set the terminal profile font to `MesloLGS NF`, then run `p10k configure` again.
+- Login shell unchanged: on Ubuntu, `chsh` can be blocked for LDAP/centrally managed accounts. After an explicit Oh My Zsh installation, the script adds a marked fallback to the target user's `.bashrc`, so a new interactive Bash terminal enters Zsh automatically while the institutional login shell remains unchanged. Remove the block between the `ThermoPhase Zsh fallback` markers if this behavior is no longer wanted.
 - Corporate proxies: Configure system proxy and git proxy settings before running the scripts.
 
 ## Uninstall/rollback (brief)
