@@ -1,6 +1,6 @@
 # provisioning
 
-Provisioning scripts for developer machines on Ubuntu, macOS, and Windows. They install common tooling (Git, VS Code, Docker), set up a user-scoped Miniconda with conda-forge, and optionally prepare CUDA.
+Provisioning scripts for developer machines on Ubuntu, macOS, and Windows. They install common tooling (Git, VS Code, Docker), Pixi, a user-scoped Conda distribution, and optionally prepare NVIDIA drivers and CUDA.
 
 These scripts are CLI-configurable and expose small profiles to make running them predictable and repeatable.
 
@@ -20,9 +20,11 @@ Ubuntu CLI flags
 | `--install-vscode` | `true` | Install Microsoft VS Code repo + `code` package |
 | `--install-docker` | `true` | Install Docker Engine from Docker apt repo |
 | `--install-cuda` | `false` | Install NVIDIA CUDA toolkit package |
-| `--install-driver` | `false` | Install NVIDIA GPU driver (bare metal only; ignored on WSL) |
-| `--cuda-toolkit-pkg` | `cuda-toolkit-12-4` | Specific CUDA toolkit package name to install |
+| `--install-driver` | `false` | Install NVIDIA GPU driver on bare-metal Ubuntu; skipped on WSL |
+| `--cuda-toolkit-pkg` | `cuda-toolkit` | Toolkit package from the NVIDIA repository; may be version-pinned |
+| `--nvidia-driver-pkg` | `nvidia-open` | NVIDIA driver package used on bare-metal Ubuntu |
 | `--install-python` | `true` | Install system Python3 + venv + pip |
+| `--install-pixi` | `true` | Install Pixi for the invoking user |
 
 macOS CLI flags
 
@@ -37,6 +39,7 @@ macOS CLI flags
 | `--miniforge-prefix` | `$HOME/miniforge3` | Install path for Miniforge |
 | `--install-llvm` | `true` | Install Homebrew llvm and libomp |
 | `--install-python` | `true` | Install Homebrew Python (includes venv) |
+| `--install-pixi` | `true` | Install Pixi through Homebrew |
 
 Windows PowerShell parameters
 
@@ -47,6 +50,7 @@ Windows PowerShell parameters
 | `-InstallDocker` | `$true` | Install Docker Desktop via Chocolatey |
 | `-InstallWindowsTerminal` | `$true` | Install Windows Terminal |
 | `-InstallCmder` | `$true` | Install Cmder (or CmderMini via `-CmderPackageId`) |
+| `-InstallPixi` | `$true` | Install Pixi for the current user |
 | `-InstallCUDA` | `$false` | Install CUDA toolkit via Chocolatey |
 | `-InstallNvidiaDriver` | `$false` | Install NVIDIA display driver via Chocolatey |
 | `-<Something>Version` | `$null` | Optional version pin (strings) for many packages (e.g., `-CudaToolkitVersion`) |
@@ -54,9 +58,27 @@ Windows PowerShell parameters
 
 ## What they install (summary)
 
-- Ubuntu: base dev tools (git, git-lfs, build-essential, cmake, ninja, unzip/xz/7zip), optional VS Code, optional Docker Engine, Miniconda for the invoking user (conda-forge configured), optional CUDA toolkit + driver.
-- macOS: Homebrew, core dev tooling via Homebrew (git, git-lfs, cmake, ninja, pkg-config, optional llvm/libomp), common casks (VS Code, iTerm2, Docker Desktop), Miniforge (conda-forge) installed into the user's home.
-- Windows: core tools via Chocolatey (git, 7zip, cmake, ninja, Visual Studio Build Tools), optional VS Code, Windows Terminal, Cmder, Docker Desktop, Miniconda, optional CUDA toolkit + driver.
+- Ubuntu: base dev tools, Pixi, optional VS Code and Docker Engine, Miniconda for the invoking user, and independently selectable NVIDIA driver and CUDA Toolkit.
+- macOS: Homebrew, Pixi, core dev tooling, common casks, and Miniforge installed into the user's home.
+- Windows: core tools via Chocolatey, Pixi, optional desktop tools, Miniconda, and independently selectable NVIDIA driver and CUDA Toolkit.
+
+## PyTorch and torch-flash recommendation
+
+Prebuilt PyTorch, Conda, and Pixi packages normally provide their own CUDA user-space runtime. For a PyTorch workstation, install a current NVIDIA host driver and omit the system CUDA Toolkit unless `nvcc` or another Toolkit development tool is explicitly required.
+
+After provisioning Linux or Windows, the `torch-flash` GPU environment can be created from its repository with:
+
+```bash
+pixi install -e gpu
+pixi run -e gpu python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+On Apple Silicon, use the normal environment and PyTorch MPS instead:
+
+```bash
+pixi install
+pixi run python -c "import torch; print(torch.backends.mps.is_available())"
+```
 
 ## Ubuntu: usage, profiles and CLI flags
 
@@ -65,14 +87,14 @@ Run from the repository root. The script requires root to install system package
 Basic run:
 
 ```bash
-sudo -E bash scripts/provision-ubuntu.sh
+sudo bash scripts/provision-ubuntu.sh
 ```
 
 Profiles
 
-- `--profile=default`  (default) -> VS Code ON, Docker ON
-- `--profile=minimal`  -> VS Code ON, Docker OFF
-- `--profile=gpu`      -> VS Code ON, Docker ON, CUDA toolkit ON (driver optional)
+- `--profile=default`  (default) -> VS Code ON, Docker ON, Pixi ON
+- `--profile=minimal`  -> VS Code ON, Docker OFF, Pixi ON
+- `--profile=gpu`      -> VS Code ON, Docker ON, Pixi ON, NVIDIA driver ON, CUDA Toolkit ON
 
 CLI flags (override profile defaults)
 
@@ -80,40 +102,53 @@ CLI flags (override profile defaults)
 - `--install-docker=true|false`
 - `--install-cuda=true|false`
 - `--install-driver=true|false`
-- `--cuda-toolkit-pkg=cuda-toolkit-12-4` (or `cuda-toolkit`)
+- `--cuda-toolkit-pkg=cuda-toolkit` (or an available version such as `cuda-toolkit-13-3`)
+- `--nvidia-driver-pkg=nvidia-open` (use `cuda-drivers` for proprietary kernel modules)
 - `--install-python=true|false`
+- `--install-pixi=true|false`
 
 Examples
 
 - Default profile (VS Code + Docker):
 
 ```bash
-sudo -E bash scripts/provision-ubuntu.sh
+sudo bash scripts/provision-ubuntu.sh
 ```
 
 - Minimal profile (skip Docker):
 
 ```bash
-sudo -E bash scripts/provision-ubuntu.sh --profile=minimal
+sudo bash scripts/provision-ubuntu.sh --profile=minimal
 ```
 
 - GPU profile but explicitly disable Docker:
 
 ```bash
-sudo -E bash scripts/provision-ubuntu.sh --profile=gpu --install-docker=false
+sudo bash scripts/provision-ubuntu.sh --profile=gpu --install-docker=false
 ```
- 
+
+- PyTorch GPU workstation: install the driver but leave CUDA runtime selection to Pixi:
+
+```bash
+sudo bash scripts/provision-ubuntu.sh \
+  --profile=gpu \
+  --install-docker=false \
+  --install-cuda=false
+```
+
 - Strict verification (optional):
 
 ```bash
-VERIFY_STRICT=true sudo -E bash scripts/provision-ubuntu.sh --profile=minimal
+sudo env VERIFY_STRICT=true bash scripts/provision-ubuntu.sh --profile=minimal
 ```
 
 What the script does (high level)
 
 - Detects the real (non-root) user who invoked sudo so Miniconda installs into their home.
-- Adds/normalizes vendor apt repositories (Docker, Microsoft Code) in an idempotent way; CUDA uses distro packages.
+- Adds/normalizes vendor apt repositories for Docker, Microsoft Code, and NVIDIA.
 - Installs base packages and tooling via apt.
+- Installs Pixi for the invoking non-root user.
+- Optionally installs the NVIDIA driver and CUDA Toolkit as independent choices.
 - Installs Miniconda into the invoking user's home and runs `conda init` for bash and zsh.
 
 Notes & gotchas
@@ -122,7 +157,9 @@ Notes & gotchas
 - The script bundles logic to detect and resolve conflicting VS Code apt repo entries before running `apt update`.
 - Miniconda installer auto-selects x86_64/arm64.
 - Docker: after install, log out/in or run `newgrp docker` to use Docker without sudo. On WSL, the script skips engine install and recommends Docker Desktop.
-- CUDA: driver install is for bare metal Ubuntu; on WSL2 use Windows driver. Reboot recommended after driver install.
+- NVIDIA packages: the script derives the repository from the Ubuntu release and architecture. A pinned Toolkit package must exist in that repository; the unversioned `cuda-toolkit` default tracks the latest supported release.
+- CUDA driver: driver installation is for bare-metal Ubuntu only. On WSL2, use the Windows NVIDIA driver. Reboot after installing or changing the bare-metal driver.
+- Pixi: installed under `~/.pixi`; open a new terminal if it is not immediately on `PATH`.
 
 ## macOS: usage, profiles and CLI flags
 
@@ -136,9 +173,9 @@ bash scripts/provision-macos.sh
 
 Profiles
 
-- `--profile=default`  (default) -> VS Code ON, Docker ON
-- `--profile=minimal`  -> VS Code ON, Docker OFF
-- `--profile=gpu`      -> VS Code ON, Docker ON (CUDA unsupported on macOS; kept for parity)
+- `--profile=default`  (default) -> VS Code ON, Docker ON, Pixi ON
+- `--profile=minimal`  -> VS Code ON, Docker OFF, Pixi ON
+- `--profile=gpu`      -> VS Code ON, Docker ON, Pixi ON (CUDA unsupported on macOS; kept for parity)
 
 CLI flags (override profile defaults)
 
@@ -150,6 +187,7 @@ CLI flags (override profile defaults)
 - `--miniforge-prefix=/path/to/miniforge3`  # default: $HOME/miniforge3
 - `--install-llvm=true|false`
 - `--install-python=true|false`
+- `--install-pixi=true|false`
 
 What the script does (high level)
 
@@ -157,11 +195,13 @@ What the script does (high level)
 - Installs dev tools via Homebrew (git, git-lfs, cmake, ninja, pkg-config, optional llvm/libomp, optional Python).
 - Installs casks: VS Code, iTerm2, Docker Desktop (if enabled).
 - Installs Miniforge into `--miniforge-prefix`, sets conda-forge (strict), runs `conda init` for bash and zsh.
+- Installs Pixi through Homebrew.
 - Optionally installs Rosetta 2 on Apple Silicon when requested.
 
 Notes & gotchas
 
 - Run as a normal user; Homebrew prefers user context.
+- Do not use `sudo` to launch the script; it now exits early with a clear error because Homebrew does not support root execution.
 - After installing Docker Desktop, launch the app once to finish setup and grant permissions.
 - If Rosetta is enabled, you may be prompted for your password.
 - Open a NEW terminal to get `conda` on PATH, or run `source "$MINIFORGE_PREFIX/etc/profile.d/conda.sh"` then `conda activate`.
@@ -182,9 +222,9 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 
 Profiles (use `-Profile <name>`) and parameters
 
-- `-Profile default`  -> default toggles as declared in the script
-- `-Profile minimal`  -> skips Docker by default
-- `-Profile gpu`      -> enables CUDA + NVIDIA driver by default
+- `-Profile default`  -> default toggles as declared in the script, including Pixi
+- `-Profile minimal`  -> skips Docker but keeps Pixi enabled
+- `-Profile gpu`      -> enables CUDA + NVIDIA driver and keeps Pixi enabled
 
 Parameters (examples)
 
@@ -192,6 +232,7 @@ Parameters (examples)
 - `-InstallDocker:$true/$false`
 - `-InstallWindowsTerminal:$true/$false`
 - `-InstallCmder:$true/$false`
+- `-InstallPixi:$true/$false`
 - `-InstallCUDA:$true/$false`
 - `-InstallNvidiaDriver:$true/$false`
 - Version pins (strings): `-CudaToolkitVersion`, `-NvidiaDriverVersion`, `-GitVersion`, `-VSCodeVersion`, `-CMakeVersion`, `-NinjaVersion`, `-VSBuildToolsVersion`, `-MinicondaVersion`, `-WindowsTerminalVersion`, `-CmderVersion`
@@ -200,13 +241,21 @@ Example: GPU profile but skip Docker and pin CUDA version
 
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
-./scripts/provision-win.ps1 -Profile gpu -InstallDocker:$false -CudaToolkitVersion 12.4.1
+./scripts/provision-win.ps1 -Profile gpu -InstallDocker:$false
+```
+
+PyTorch GPU workstation with driver only:
+
+```powershell
+./scripts/provision-win.ps1 -Profile gpu -InstallDocker:$false -InstallCUDA:$false
 ```
 
 What the script does (high level)
 
 - Installs Chocolatey if missing, then uses it to install packages. Visual Studio Build Tools are installed with package parameters to include MSVC/MSBuild components.
 - Installs system Python first (optional), then installs Miniconda using the official latest installer by default (or Chocolatey if configured), and runs `conda init` for PowerShell and cmd.
+- Installs Pixi for the current user using the official installer.
+- Treats the NVIDIA driver and CUDA Toolkit as independent options.
 - Ensures ExecutionPolicy for the CurrentUser is set so PowerShell profiles load (required for conda init to be effective).
 
 Notes
@@ -224,10 +273,12 @@ Ubuntu (new terminal):
 
 ```bash
 git --version
+pixi --version
 code --version        # if VS Code enabled
 docker --version      # if Docker enabled
 conda --version
 python -V
+nvidia-smi            # if NVIDIA driver/CUDA enabled
 nvcc --version        # if CUDA installed
 ```
 
@@ -235,6 +286,7 @@ macOS (new terminal):
 
 ```bash
 git --version
+pixi --version
 code --version        # if VS Code enabled
 docker --version      # if Docker Desktop enabled
 conda --version
@@ -246,10 +298,12 @@ Windows (open a new elevated PowerShell or normal PowerShell after admin tasks c
 
 ```powershell
 git --version
+pixi --version
 code --version        # if VS Code enabled
 docker --version      # if Docker Desktop enabled
 conda --version
 python -V
+nvidia-smi            # if NVIDIA driver/CUDA enabled
 nvcc --version        # if CUDA installed
 ```
 
@@ -259,6 +313,9 @@ nvcc --version        # if CUDA installed
 - New shells required: Open a new terminal to pick up `conda init` changes and updated PATH.
 - Docker group (Ubuntu): If `docker` commands require sudo after install, log out/in or run `newgrp docker`.
 - VS Code apt repo conflicts: the Ubuntu script tries to detect and normalize duplicate Microsoft Code repo entries before `apt update` to avoid signed-by problems.
+- CUDA package not found on Ubuntu: prefer `--cuda-toolkit-pkg=cuda-toolkit`, or inspect available pins with `apt-cache search '^cuda-toolkit-[0-9]'` after the NVIDIA repository is configured.
+- PyTorch reports no GPU: run `nvidia-smi`, then check `torch.cuda.is_available()` and `torch.version.cuda` inside the same Pixi/Conda environment. The CUDA version printed by `nvidia-smi` is the driver's maximum supported API, not necessarily a system Toolkit installation.
+- Pixi not on `PATH`: open a new terminal. On Ubuntu it is installed under `~/.pixi/bin`; on macOS Homebrew provides it; on Windows the official installer normally uses `%LOCALAPPDATA%\pixi\bin` and updates the user `PATH`.
 - Corporate proxies: Configure system proxy and git proxy settings before running the scripts.
 
 ## Uninstall/rollback (brief)
