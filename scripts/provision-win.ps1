@@ -127,11 +127,35 @@ $vsParamList = @(
   "--add Microsoft.VisualStudio.Component.MSBuild",
   "--add Microsoft.VisualStudio.Component.VC.CMake.Project",
   "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-  "--add Microsoft.VisualStudio.Component.Windows11SDK.22000",
+  "--add Microsoft.VisualStudio.Component.Windows11SDK.26100",
   "--quiet", "--norestart", "--nocache"
 )
 $vsParams = '"' + ($vsParamList -join ' ') + '"'
 Choco-Ensure -Pkg visualstudio2022buildtools -Version $VSBuildToolsVersion -PackageParameters $vsParams
+
+# Chocolatey skips an already installed Build Tools package, even when a
+# required SDK is missing. Check the actual headers and repair that component.
+$windowsKitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+$windowsSdk = Get-ChildItem (Join-Path $windowsKitsRoot 'Include') -Directory -ErrorAction SilentlyContinue |
+  Where-Object {
+    (Test-Path (Join-Path $_.FullName 'ucrt\corecrt.h')) -and
+    (Test-Path (Join-Path $_.FullName 'um\Windows.h')) -and
+    (Test-Path (Join-Path $windowsKitsRoot "Lib\$($_.Name)\ucrt\x64\ucrt.lib"))
+  } | Select-Object -First 1
+if (-not $windowsSdk) {
+  $vsInstallerDir = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+  $vsInstallPath = & (Join-Path $vsInstallerDir 'vswhere.exe') -latest -products Microsoft.VisualStudio.Product.BuildTools -version '[17.0,18.0)' -property installationPath
+  if ($LASTEXITCODE -ne 0 -or -not $vsInstallPath) { throw "Could not locate Visual Studio 2022 Build Tools to install the Windows SDK." }
+  Write-Host "Installing the missing Windows 11 SDK for C++/CUDA compilation..."
+  $sdkProcess = Start-Process -FilePath (Join-Path $vsInstallerDir 'setup.exe') -ArgumentList @(
+    'modify', '--installPath', ('"' + $vsInstallPath + '"'),
+    '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100',
+    '--quiet', '--norestart'
+  ) -Wait -NoNewWindow -PassThru
+  if ($sdkProcess.ExitCode -notin @(0, 3010)) {
+    throw "Windows SDK installation failed with exit code $($sdkProcess.ExitCode)."
+  }
+}
 
 if ($InstallVSCode)          { Choco-Ensure -Pkg vscode -Version $VSCodeVersion }
 if ($InstallWindowsTerminal) { Choco-Ensure -Pkg microsoft-windows-terminal -Version $WindowsTerminalVersion }
@@ -261,7 +285,9 @@ function Install-Pixi {
     $installer = Join-Path $env:TEMP 'install-pixi.ps1'
     Write-Host "Downloading the official Pixi installer..."
     Invoke-WebRequest -Uri 'https://pixi.sh/install.ps1' -OutFile $installer -UseBasicParsing
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $installer
+    # Child-process stdout includes installer messages. Keep it out of the
+    # function's success stream, which must return only the executable path.
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $installer | Out-Host
     $pixiExitCode = $LASTEXITCODE
     Remove-Item $installer -Force -ErrorAction SilentlyContinue
     if ($pixiExitCode -ne 0) { throw "Pixi installer failed with exit code $pixiExitCode." }
@@ -321,8 +347,24 @@ try {
 # NVIDIA driver and CUDA Toolkit are independent. Prebuilt PyTorch/Pixi
 # environments usually need only a compatible host driver.
 if ($InstallNvidiaDriver) {
-  Choco-Ensure -Pkg nvidia-display-driver -Version $NvidiaDriverVersion
-  Write-Host "NVIDIA display driver installed (or already present). A reboot may be required."
+  # OEM/manual driver installs are not necessarily tracked by Chocolatey.
+  # Keep a working driver unless a specific package version was requested.
+  $installedDriver = $null
+  $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+  if ($nvidiaSmi) {
+    try {
+      $detectedDriver = & $nvidiaSmi.Source --query-gpu=driver_version --format=csv,noheader 2>$null
+      if ($LASTEXITCODE -eq 0) {
+        $installedDriver = $detectedDriver | Where-Object { $_ -match '^\d+\.\d+$' } | Select-Object -Unique
+      }
+    } catch { Write-Warning "Existing NVIDIA driver could not be verified; attempting installation." }
+  }
+  if ($installedDriver -and -not $NvidiaDriverVersion) {
+    Write-Host "NVIDIA display driver already working: $($installedDriver -join ', ') (skipping install)."
+  } else {
+    Choco-Ensure -Pkg nvidia-display-driver -Version $NvidiaDriverVersion
+    Write-Host "NVIDIA display driver installed (or already present). A reboot may be required."
+  }
 }
 
 if ($InstallCUDA) {

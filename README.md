@@ -304,6 +304,7 @@ PyTorch GPU workstation with driver only:
 What the script does (high level)
 
 - Installs Chocolatey if missing, then uses it to install packages. Visual Studio Build Tools are installed with package parameters to include MSVC/MSBuild components.
+- Checks the Windows SDK headers and libraries needed for C++/CUDA compilation and adds the SDK if an existing Build Tools installation is missing it.
 - Installs system Python first (optional), then installs Miniconda using the official latest installer by default (or Chocolatey if configured), and runs `conda init` for PowerShell and cmd.
 - Installs Pixi for the current user using the official installer.
 - Treats the NVIDIA driver and CUDA Toolkit as independent options.
@@ -314,6 +315,7 @@ Notes
 - Must run in an elevated PowerShell. The script will throw if not elevated.
 - If Docker Desktop is installed and your account was added to `docker-users`, sign out/in.
 - If NVIDIA driver is installed, reboot is recommended.
+- An unpinned NVIDIA driver installation keeps an existing driver that successfully responds to `nvidia-smi`, including OEM/manual installations outside Chocolatey. Use `-NvidiaDriverVersion` to request a specific Chocolatey package version.
 - The script supports parameters for Miniconda installation: direct official installer by default (`-MinicondaUseDirectInstaller`), install directory, forced reinstall, and conda self-update.
 
 ## Verification
